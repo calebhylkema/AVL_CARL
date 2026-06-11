@@ -37,8 +37,8 @@ becomes a sensor/redundancy node.
 - [ ] Implement heartbeat + watchdog + e-stop across all nodes.
 
 ### Node firmware
-- [ ] Choose toolchain (PlatformIO mono-repo vs Teensyduino + STM32CubeIDE).
-- [ ] Scaffold `firmware/master`, `firmware/throttle`, `firmware/steering`.
+- [x] Choose toolchain — **PlatformIO monorepo** (one env per node, shared `lib/`).
+- [x] Scaffold `firmware/` (master, throttle, steering, shared `lib/`, test) — empty stubs.
 - [ ] Throttle node: 4-motor PWM command + rear-encoder read + fail-safe.
 - [ ] Steering node: CL57T step/dir/enable + homing/limits + hold-on-fault.
 - [ ] Master node: command arbitration + heartbeat + telemetry aggregation.
@@ -55,7 +55,6 @@ becomes a sensor/redundancy node.
 
 ## Open decisions
 
-- Toolchain: unified PlatformIO vs per-vendor IDEs.
 - Per-wheel independent throttle vs single throttle value.
 - Steering homing strategy (limit switch / current sense / position pot).
 - Whether all 4 wheels are driven or only the (encoder-equipped) rear pair.

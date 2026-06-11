@@ -213,7 +213,13 @@ AVL_CARL/
 │   ├── architecture.md  ← node topology, MCU assignment rationale, caveats
 │   ├── can-bus.md       ← CAN bitrate, node IDs, message/ID map
 │   └── roadmap.md       ← phased plan, open questions, TODOs
-└── firmware/            ← per-node firmware (added once toolchain is chosen)
+└── firmware/            ← PlatformIO monorepo (see firmware/README.md)
+    ├── platformio.ini   ← one [env] per node, shared lib/
+    ├── lib/             ← shared code: carl_protocol, heartbeat, common
+    ├── master/          ← NUCLEO-F767ZI (VCU)
+    ├── throttle/        ← Teensy 4.1 (motor drive + encoders)
+    ├── steering/        ← Teensy 4.1 (CL57T stepper)
+    └── test/            ← host-run unit tests
 ```
 
 > `CLAUDE.md` (AI-assistant project context) and the `.claude/` directory are local-only
@@ -223,21 +229,23 @@ AVL_CARL/
 
 ## Toolchain & Getting Started
 
-> Firmware is not yet committed — toolchain selection is pending. Planned environments:
-
-| Board | Recommended toolchain |
-|-------|-----------------------|
-| Teensy 4.1 | Teensyduino (Arduino IDE) **or** PlatformIO |
-| NUCLEO-F767ZI | STM32CubeIDE / HAL **or** PlatformIO |
-
-A unified **PlatformIO** mono-repo (one environment per node under `firmware/`) is a strong
-candidate for keeping all three nodes in one build system. To be decided — see
-[`docs/roadmap.md`](docs/roadmap.md).
+Firmware is a **PlatformIO monorepo** under [`firmware/`](firmware/) — one build
+environment per node, with shared code in `firmware/lib/`. Source files are currently
+empty stubs (skeleton only). See [`firmware/README.md`](firmware/README.md) for details.
 
 ```bash
 git clone https://github.com/calebhylkema/AVL_CARL.git
-cd AVL_CARL
+cd AVL_CARL/firmware
+
+pio run -e throttle      # build/flash ONLY the throttle node
+pio run                  # build all three nodes
 ```
+
+| Node | Board | PlatformIO platform |
+|------|-------|---------------------|
+| master | NUCLEO-F767ZI | `ststm32` |
+| throttle | Teensy 4.1 | `teensy` |
+| steering | Teensy 4.1 | `teensy` |
 
 ---
 
