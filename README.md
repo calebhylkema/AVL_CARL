@@ -216,8 +216,8 @@ AVL_CARL/
 └── firmware/            ← per-node firmware (added once toolchain is chosen)
 ```
 
-> `CLAUDE.md` (AI-assistant project context) is also kept in the repo. The `.claude/`
-> directory is local Claude Code config/state and is intentionally git-ignored.
+> `CLAUDE.md` (AI-assistant project context) and the `.claude/` directory are local-only
+> Claude Code files and are intentionally git-ignored.
 
 ---
 

@@ -2,6 +2,7 @@
 # Claude Code local config / state (per the team's request)
 # ─────────────────────────────────────────────────────────────
 .claude/
+CLAUDE.md
 
 # ─────────────────────────────────────────────────────────────
 # Embedded build artifacts
