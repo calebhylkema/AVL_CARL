@@ -21,7 +21,7 @@ edge nodes execute and report feedback. A fourth board is held as a spare.
    ════════════════ CAN 2.0 bus (120 Ω both ends) ════════════════
             │                                         │
    ┌────────┴────────┐                       ┌────────┴────────┐
-   │ THROTTLE/DRIVE  │ Teensy 4.1            │   STEERING      │ Teensy 4.0
+   │ THROTTLE/DRIVE  │ Teensy 4.1            │   STEERING      │ Teensy 4.1
    │ 4× motor PWM    │                       │ step/dir/enable │
    │ encoder decode  │                       │   → CL57T       │
    └─────────────────┘                       └─────────────────┘
@@ -33,7 +33,7 @@ edge nodes execute and report feedback. A fourth board is held as a spare.
 |------|-------|------------------|
 | **Master / VCU** | NUCLEO-F767ZI | Source/arbitrate commands, emit heartbeat, run the watchdog/e-stop logic, expose the future autonomy interface (Ethernet to a companion computer), aggregate telemetry. |
 | **Throttle / Motor-drive** | Teensy 4.1 | Receive throttle/motion commands over CAN; drive the 4 wheel motors via PWM; read the wheel encoders (quadrature) for speed/feedback; enforce fail-safe (motors → 0) on heartbeat loss. |
-| **Steering** | Teensy 4.0 | Receive steering-angle commands over CAN; generate `step/dir/enable` to the CL57T; handle homing/limits; hold position on heartbeat loss. |
+| **Steering** | Teensy 4.1 | Receive steering-angle commands over CAN; generate `step/dir/enable` to the CL57T; handle homing/limits; hold position on heartbeat loss. |
 | **Spare** | NUCLEO-F767ZI | Reserved for a future 4th node (BMS, sensor hub, or redundancy). |
 
 ## 3. MCU-to-node rationale
@@ -46,8 +46,8 @@ The assignment maps each board's strengths to each node's dominant requirement:
 - **Throttle = Teensy 4.1** — the most I/O-heavy node. Teensy 4.x has **hardware
   quadrature decoders** (no CPU cost to track encoders) plus abundant **FlexPWM** channels
   for 4 motor drivers, all at 600 MHz with tightly-coupled memory for deterministic timing.
-  3× FlexCAN. The 4.1 (vs 4.0) is preferred here for extra I/O and optional Ethernet.
-- **Steering = Teensy 4.0** — simplest node; only needs clean timer-based step pulses plus
+  3× FlexCAN.
+- **Steering = Teensy 4.1** — simplest node; only needs clean timer-based step pulses plus
   a few GPIO. Same Teensyduino toolchain as the throttle node keeps firmware consistent.
 - **Spare = NUCLEO-F767ZI** — identical to the VCU, so a future safety/BMS/sensor node or a
   redundant master is a drop-in.
@@ -83,8 +83,8 @@ Consistent with the **no-brake** design (stop = command 0 and hold):
 
 ## 6. Caveats
 
-- **Confirm Teensy models.** The plan assumes one 4.1 (throttle) and one 4.0 (steering).
-  If both are 4.0, the throttle node loses optional Ethernet and some GPIO — still workable.
+- **Teensy models confirmed:** both boards are **Teensy 4.1** (the steering node is no longer
+  a 4.0). No I/O or Ethernet compromise on either Teensy node.
 - **No CAN-FD / no CAN3 on F767.** STM32F767 has only CAN1/CAN2. Payloads are capped at
   8 bytes (classic CAN) — adequate for the command/feedback set.
 - **Encoder level shifting** (5–24 V → 3.3 V) and **CL57T input levels** (3.3 V vs opto)

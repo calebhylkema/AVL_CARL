@@ -18,7 +18,7 @@ still gathering.
 | Steering | Stepper driver | **CL57T** closed-loop | 1 | 24 V actuator rail; step/dir/enable | On vehicle |
 | Steering | Stepper motor | TBD (closed-loop NEMA) | 1 | TBD | On vehicle |
 | Sensing | Wheel encoder | **E38S6-600-24G** (NO:1001119) | 2 (rear) | 600 PPR, quadrature, 5–24 V | On vehicle |
-| Compute | Microcontroller | **Teensy** (4.0/4.1 TBD) | 2 | 600 MHz Cortex-M7 | In hand |
+| Compute | Microcontroller | **Teensy 4.1** | 2 | 600 MHz Cortex-M7 | In hand |
 | Compute | Microcontroller | **NUCLEO-F767ZI** | 2 | 216 MHz Cortex-M7, Ethernet | In hand |
 | Comms | CAN transceiver | TBD (e.g. TJA1051T/3) | 3+ | 3.3 V VIO recommended | **Not yet purchased** |
 | Power | Battery pack | **TBD** | 1 | ~24 V (capacity TBD) | TBD |
@@ -88,13 +88,12 @@ still gathering.
 |-------|------|-------|
 | NUCLEO-F767ZI #1 | Master / VCU | Ethernet for autonomy link; 2× bxCAN |
 | Teensy 4.1 | Throttle / motor-drive | HW quadrature + FlexPWM; 3× FlexCAN |
-| Teensy 4.0 | Steering | step/dir/enable to CL57T |
+| Teensy 4.1 | Steering | step/dir/enable to CL57T |
 | NUCLEO-F767ZI #2 | Spare / future 4th node | BMS / sensor hub / redundancy |
 
 See [`architecture.md`](architecture.md) for the full capability comparison and rationale.
 
-**Open items**
-- Confirm physical Teensy models (4.0 vs 4.1).
+> Teensy models confirmed: **both are Teensy 4.1**.
 
 ---
 

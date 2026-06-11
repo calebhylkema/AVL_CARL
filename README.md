@@ -77,7 +77,7 @@ feedback.
             │                                                   │
    ┌────────┴───────────┐                            ┌──────────┴──────────┐
    │  THROTTLE / DRIVE  │                            │      STEERING       │
-   │     Teensy 4.1     │                            │      Teensy 4.0     │
+   │     Teensy 4.1     │                            │      Teensy 4.1     │
    │  4× motor PWM ·    │                            │  step/dir/enable →  │
    │  wheel-encoder     │                            │  CL57T stepper      │
    │  quadrature decode │                            │  (Ackermann)        │
@@ -110,11 +110,10 @@ needs (see [`docs/architecture.md`](docs/architecture.md) for the full rationale
 |------|-------|----------------|
 | **Master / VCU** | **NUCLEO-F767ZI** | Built-in Ethernet MAC for the future autonomy/companion-computer link; Cortex-M7 + FPU compute headroom; 2× bxCAN; large GPIO breakout; industrial toolchain. |
 | **Throttle / Motor-drive** | **Teensy 4.1** | Most I/O-heavy node. Hardware quadrature decoders for the wheel encoders + abundant FlexPWM channels for 4 motor drivers; 600 MHz Cortex-M7 with tightly-coupled memory for deterministic real-time control; 3× FlexCAN. |
-| **Steering** | **Teensy 4.0** | Lowest-complexity node: 3 GPIO for CL57T `step/dir/enable` + optional position feedback; clean timer-based step generation; same Teensyduino toolchain as the throttle node. |
+| **Steering** | **Teensy 4.1** | Lowest-complexity node: 3 GPIO for CL57T `step/dir/enable` + optional position feedback; clean timer-based step generation; same Teensyduino toolchain as the throttle node. |
 | **Spare / future** | **NUCLEO-F767ZI** | Identical to the VCU — drop-in for a future 4th node (BMS, sensor hub, or redundancy). |
 
-> **Note:** Teensy models (4.0 vs 4.1) must be confirmed against physical inventory. The
-> 4.1 is required on the throttle node for its extra I/O and (optional) Ethernet. See
+> **Note:** All Teensy boards in inventory are confirmed **Teensy 4.1**. See
 > [Caveats](docs/architecture.md#caveats).
 
 ---
@@ -146,7 +145,7 @@ Full bill of materials, part numbers, ratings, and pinouts live in
 ### Compute
 | Item | Part / Spec | Notes |
 |------|-------------|-------|
-| Microcontrollers | 2× **Teensy** (4.0/4.1, TBD) + 2× **NUCLEO-F767ZI** | See node assignment above. |
+| Microcontrollers | 2× **Teensy 4.1** + 2× **NUCLEO-F767ZI** | See node assignment above. |
 
 ### Power
 | Item | Part / Spec | Notes |
@@ -228,7 +227,7 @@ AVL_CARL/
 
 | Board | Recommended toolchain |
 |-------|-----------------------|
-| Teensy 4.0 / 4.1 | Teensyduino (Arduino IDE) **or** PlatformIO |
+| Teensy 4.1 | Teensyduino (Arduino IDE) **or** PlatformIO |
 | NUCLEO-F767ZI | STM32CubeIDE / HAL **or** PlatformIO |
 
 A unified **PlatformIO** mono-repo (one environment per node under `firmware/`) is a strong
@@ -246,7 +245,7 @@ cd AVL_CARL
 
 See [`docs/roadmap.md`](docs/roadmap.md) for the living plan. Near-term milestones:
 
-- [ ] Confirm Teensy models (4.0 vs 4.1) and front-wheel encoder count.
+- [ ] Confirm front-wheel encoder count. *(Teensy models confirmed: all 4.1.)*
 - [ ] Acquire and bench-test CAN transceivers; bring up a 2-node CAN link.
 - [ ] Define the CAN message/ID map in [`docs/can-bus.md`](docs/can-bus.md).
 - [ ] Encoder level-shifting circuit + verified 3.3 V quadrature read on the throttle node.

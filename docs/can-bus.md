@@ -24,7 +24,7 @@
 |------|-------|--------------------|
 | Master / VCU | NUCLEO-F767ZI | 0x01 |
 | Throttle / Motor-drive | Teensy 4.1 | 0x02 |
-| Steering | Teensy 4.0 | 0x03 |
+| Steering | Teensy 4.1 | 0x03 |
 | (Future 4th node) | NUCLEO-F767ZI | 0x04 |
 
 ---

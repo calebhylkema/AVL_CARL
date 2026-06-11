@@ -18,7 +18,7 @@ becomes a sensor/redundancy node.
 ## Milestones / TODO
 
 ### Inventory & procurement
-- [ ] Confirm physical Teensy models (4.0 vs 4.1).
+- [x] Confirm physical Teensy models — **both are Teensy 4.1**.
 - [ ] Confirm front-wheel encoder count *(user checking 2026-06-11)*.
 - [ ] **Purchase CAN transceivers** (3.3 V VIO, e.g. TJA1051T/3) — blocking the CAN bring-up.
 - [ ] Document the battery pack (chemistry, capacity, BMS, fusing, kill switch).

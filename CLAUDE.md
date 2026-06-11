@@ -13,7 +13,7 @@ safety-critical.
 ## Architecture in one paragraph
 A single classic-CAN 2.0 backbone with three nodes: a **Master/VCU** (NUCLEO-F767ZI), a
 **Throttle/motor-drive** node (Teensy 4.1) that drives the 4 wheel motors and reads the
-wheel encoders, and a **Steering** node (Teensy 4.0) that drives a CL57T stepper for
+wheel encoders, and a **Steering** node (Teensy 4.1) that drives a CL57T stepper for
 Ackermann steering. A second NUCLEO-F767ZI is a spare/future 4th node.
 
 ## Source-of-truth docs (read these before answering hardware/architecture questions)
@@ -24,7 +24,7 @@ Ackermann steering. A second NUCLEO-F767ZI is a spare/future 4th node.
 - `README.md` — team-facing professional overview (keep in sync with the docs).
 
 ## Key facts to remember
-- Inventory: 2× Teensy (4.0/4.1 — **confirm models**) + 2× NUCLEO-F767ZI.
+- Inventory: 2× **Teensy 4.1** (confirmed) + 2× NUCLEO-F767ZI.
 - Both MCU families are **classic CAN only** (no CAN-FD). STM32F767 has CAN1/CAN2 only.
 - Encoders: E38S6-600-24G, 600 PPR quadrature, **5–24 V outputs → need level shifting to 3.3 V**.
   Wiring: white=A, green=B, red=VCC, black=0V.
