@@ -1,0 +1,52 @@
+# ─────────────────────────────────────────────────────────────
+# Claude Code local config / state (per the team's request)
+# ─────────────────────────────────────────────────────────────
+.claude/
+
+# ─────────────────────────────────────────────────────────────
+# Embedded build artifacts
+# ─────────────────────────────────────────────────────────────
+# Generic object / binary output
+*.o
+*.obj
+*.d
+*.elf
+*.bin
+*.hex
+*.map
+*.lst
+*.su
+*.a
+*.lib
+
+# PlatformIO (Teensy / STM32)
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# STM32CubeIDE / Eclipse
+Debug/
+Release/
+.metadata/
+*.launch
+.settings/
+.cproject
+.project
+
+# Arduino / Teensyduino
+build/
+*.tmp
+
+# ─────────────────────────────────────────────────────────────
+# Editors / IDEs
+# ─────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.code-workspace
+
+# ─────────────────────────────────────────────────────────────
+# OS cruft
+# ─────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
