@@ -78,13 +78,13 @@ feedback.
    ┌────────┴───────────┐                            ┌──────────┴──────────┐
    │  THROTTLE / DRIVE  │                            │      STEERING       │
    │     Teensy 4.1     │                            │      Teensy 4.1     │
-   │  4× motor PWM ·    │                            │  step/dir/enable →  │
+   │  4× IBT_2 (8 PWM)· │                            │  step/dir/enable →  │
    │  wheel-encoder     │                            │  CL57T stepper      │
    │  quadrature decode │                            │  (Ackermann)        │
    └────────┬───────────┘                            └──────────┬──────────┘
             │                                                    │
    ┌────────┴───────────┐                            ┌──────────┴──────────┐
-   │ 4× MY4845 motors   │                            │ Closed-loop stepper │
+   │ 4× IBT_2 → MY4845  │                            │ Closed-loop stepper │
    │ 2× rear encoders   │                            │ trapezoidal linkage │
    └────────────────────┘                            └─────────────────────┘
 ```
@@ -102,18 +102,18 @@ feedback.
 
 ## Node / Microcontroller Assignment
 
-Inventory: **2× Teensy** and **2× STM32 NUCLEO-F767ZI**. Three boards are deployed; one
-is held as a spare / future 4th node. Assignment is driven by each node's I/O and compute
-needs (see [`docs/architecture.md`](docs/architecture.md) for the full rationale).
+Inventory: **2× Teensy 4.1** and **1× STM32 NUCLEO-F767ZI** — one board per node, **no spare**.
+Assignment is driven by each node's I/O and compute needs (see
+[`docs/architecture.md`](docs/architecture.md) for the full rationale).
 
 | Node | Board | Why this board |
 |------|-------|----------------|
-| **Master / VCU** | **NUCLEO-F767ZI** | Built-in Ethernet MAC for the future autonomy/companion-computer link; Cortex-M7 + FPU compute headroom; 2× bxCAN; large GPIO breakout; industrial toolchain. |
+| **Master / VCU** | **NUCLEO-F767ZI** | On-board Ethernet PHY + RJ45 for the future autonomy/companion-computer link; Cortex-M7 + FPU compute headroom; bxCAN; large GPIO breakout; industrial toolchain. |
 | **Throttle / Motor-drive** | **Teensy 4.1** | Most I/O-heavy node. Hardware quadrature decoders for the wheel encoders + abundant FlexPWM channels for 4 motor drivers; 600 MHz Cortex-M7 with tightly-coupled memory for deterministic real-time control; 3× FlexCAN. |
 | **Steering** | **Teensy 4.1** | Lowest-complexity node: 3 GPIO for CL57T `step/dir/enable` + optional position feedback; clean timer-based step generation; same Teensyduino toolchain as the throttle node. |
-| **Spare / future** | **NUCLEO-F767ZI** | Identical to the VCU — drop-in for a future 4th node (BMS, sensor hub, or redundancy). |
 
-> **Note:** All Teensy boards in inventory are confirmed **Teensy 4.1**. See
+> **Note:** Inventory confirmed 2026-06-11 — 1× NUCLEO + 2× Teensy 4.1, all in use. A future
+> 4th node (BMS / sensor hub / redundancy) needs an additional board. See
 > [Caveats](docs/architecture.md#caveats).
 
 ---
@@ -128,7 +128,7 @@ Full bill of materials, part numbers, ratings, and pinouts live in
 |------|-------------|-------|
 | Traction motors | **MY4845**, 24 V, 150 W, ~2300 rpm | One per wheel (4 total), each coupled to a gearbox. |
 | Motor count | 4 (one per wheel) | Independent per-wheel drive. |
-| Drivers | PWM-input motor drivers *(TBD)* | Commanded by the throttle node. |
+| Drivers | **IBT_2** (BTS7960 dual H-bridge), 4× | One per motor. Bidirectional; 2 PWM lines each (8 total) + enable, commanded by the throttle node. |
 
 ### Steering
 | Item | Part / Spec | Notes |
@@ -145,7 +145,7 @@ Full bill of materials, part numbers, ratings, and pinouts live in
 ### Compute
 | Item | Part / Spec | Notes |
 |------|-------------|-------|
-| Microcontrollers | 2× **Teensy 4.1** + 2× **NUCLEO-F767ZI** | See node assignment above. |
+| Microcontrollers | 2× **Teensy 4.1** + 1× **NUCLEO-F767ZI** | See node assignment above. |
 
 ### Power
 | Item | Part / Spec | Notes |
@@ -164,8 +164,8 @@ Full bill of materials, part numbers, ratings, and pinouts live in
   classic-CAN only — no CAN-FD on this hardware).
 - **Recommended bitrate:** 500 kbit/s (revisit for final bus length).
 - **Topology:** Single linear bus, **120 Ω termination at both physical ends**.
-- **Transceivers:** External CAN PHYs required (e.g. **TJA1051T/3** with a 3.3 V `VIO`).
-  *Being purchased — not yet in hand.*
+- **Transceivers:** Adafruit **TJA1051T/3** ×3 (in hand) — 3.3 V logic, on-board switchable
+  120 Ω termination (enable on the two end nodes only).
 - **Message priority:** 11-bit IDs, lower ID = higher priority. E-stop / heartbeat get the
   lowest IDs (highest priority), then steering/throttle commands, then telemetry/feedback.
 
@@ -230,8 +230,10 @@ AVL_CARL/
 ## Toolchain & Getting Started
 
 Firmware is a **PlatformIO monorepo** under [`firmware/`](firmware/) — one build
-environment per node, with shared code in `firmware/lib/`. Source files are currently
-empty stubs (skeleton only). See [`firmware/README.md`](firmware/README.md) for details.
+environment per node, with shared code in `firmware/lib/`. **Phase 1 (differential drive)
+is implemented**: master + throttle nodes are functional and the steering node is a
+safe-idle stub. See [`firmware/README.md`](firmware/README.md) and
+[`docs/wiring.md`](docs/wiring.md) for details.
 
 ```bash
 git clone https://github.com/calebhylkema/AVL_CARL.git
@@ -239,6 +241,10 @@ cd AVL_CARL/firmware
 
 pio run -e throttle      # build/flash ONLY the throttle node
 pio run                  # build all three nodes
+pio test -e native       # run protocol unit tests on the PC (no hardware)
+
+# drive it (wheels off the ground!):
+python test/teleop.py --port COM5   # 1-4 speed · w a s d move · x stop
 ```
 
 | Node | Board | PlatformIO platform |

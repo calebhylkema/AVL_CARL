@@ -10,17 +10,18 @@
 Fully electronic throttle + steering over CAN, with a fail-safe heartbeat. No autonomy.
 
 ### Phase 2 — Autonomy (planned)
-Companion compute on the master (Ethernet) for perception/planning; the spare NUCLEO
-becomes a sensor/redundancy node.
+Companion compute on the master (Ethernet) for perception/planning. A sensor/redundancy
+node would need a new 4th board (no spare in the 3-board inventory).
 
 ---
 
 ## Milestones / TODO
 
 ### Inventory & procurement
-- [x] Confirm physical Teensy models — **both are Teensy 4.1**.
+- [x] Confirm board inventory — **1× NUCLEO-F767ZI + 2× Teensy 4.1** (2026-06-11). One per
+  node, no spare. Master = NUCLEO; throttle & steering = Teensy.
 - [ ] Confirm front-wheel encoder count *(user checking 2026-06-11)*.
-- [ ] **Purchase CAN transceivers** (3.3 V VIO, e.g. TJA1051T/3) — blocking the CAN bring-up.
+- [x] **Purchase CAN transceivers** — Adafruit **TJA1051T/3** ×3 (in hand, 2026-06-11).
 - [ ] Document the battery pack (chemistry, capacity, BMS, fusing, kill switch).
 - [ ] Identify the motor driver model + PWM requirements.
 - [ ] Identify the stepper motor model + CL57T microstep setting.
@@ -33,15 +34,15 @@ becomes a sensor/redundancy node.
 ### Communication
 - [ ] Wire a 2-node CAN link (master + one edge) with 120 Ω termination.
 - [ ] Finalize bitrate after measuring bus length.
-- [ ] Lock the CAN message/ID map and payload layouts in [`can-bus.md`](can-bus.md).
-- [ ] Implement heartbeat + watchdog + e-stop across all nodes.
+- [x] Lock the CAN message/ID map and payload layouts in [`can-bus.md`](can-bus.md).
+- [x] Implement heartbeat + watchdog + e-stop across all nodes *(firmware written; pending bench validation)*.
 
 ### Node firmware
 - [x] Choose toolchain — **PlatformIO monorepo** (one env per node, shared `lib/`).
 - [x] Scaffold `firmware/` (master, throttle, steering, shared `lib/`, test) — empty stubs.
-- [ ] Throttle node: 4-motor PWM command + rear-encoder read + fail-safe.
-- [ ] Steering node: CL57T step/dir/enable + homing/limits + hold-on-fault.
-- [ ] Master node: command arbitration + heartbeat + telemetry aggregation.
+- [x] Throttle node: 4-motor PWM command + rear-encoder read + fail-safe.
+- [ ] Steering node: CL57T step/dir/enable + homing/limits + hold-on-fault *(Phase 1: safe-idle stub only; kart turns via differential drive)*.
+- [x] Master node: command arbitration + heartbeat + telemetry aggregation *(teleop over USB serial)*.
 
 ### Integration & test
 - [ ] Bench test each node (wheels off the ground).
@@ -49,7 +50,7 @@ becomes a sensor/redundancy node.
 
 ### Phase 2 — autonomy
 - [ ] Master ↔ companion-computer interface over Ethernet.
-- [ ] Repurpose spare NUCLEO as sensor hub / redundancy node.
+- [ ] Add a 4th board for a sensor hub / redundancy node (no spare in current inventory).
 
 ---
 

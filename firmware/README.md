@@ -1,7 +1,23 @@
 # AVL_CARL Firmware
 
-PlatformIO monorepo for the three CAN nodes. Source files are currently **empty stubs** —
-this is the folder/file skeleton; implementation comes later.
+PlatformIO monorepo for the three CAN nodes.
+
+**Phase 1 (differential drive) is implemented:** master + throttle nodes are functional;
+the steering node is a **safe-idle stub** (board unpowered, kart turns via differential
+drive). See [`../docs/wiring.md`](../docs/wiring.md) for the pin-level wiring and
+[`../docs/can-bus.md`](../docs/can-bus.md) for the locked message map.
+
+## Quick start (Phase 1 teleop)
+
+1. Flash the master (ST-LINK) and throttle (Teensy Loader):
+   `pio run -e master -t upload` and `pio run -e throttle -t upload`.
+2. With wheels **off the ground**, run the keyboard teleop against the master's USB serial:
+   ```bash
+   pip install pyserial
+   python test/teleop.py --port COM5      # use --list to find the port
+   ```
+   `1`–`4` set speed, `w/a/s/d` drive, `c` center, `x`/SPACE stop, `e`/`r` e-stop/reset.
+3. Run host unit tests for the protocol (no hardware): `pio test -e native`.
 
 ## Build / flash
 
@@ -44,3 +60,9 @@ firmware/
   one `platformio.ini`.
 - The `framework = arduino` lines are a sensible default for bring-up; the master can be
   switched to the STM32Cube/HAL framework later if needed.
+- **CAN libraries:** Teensy nodes use the core-bundled `FlexCAN_T4`; the STM32 master uses
+  `pazi88/STM32_CAN` (pulled in via `lib_deps`). The throttle node uses
+  `paulstoffregen/Encoder` for the rear wheel quadrature.
+- **Boot/flash protocols differ per chip** — Teensy uses the HalfKay bootloader (Teensy
+  Loader; tap the button if it doesn't auto-reboot), the NUCLEO uses on-board ST-LINK (SWD).
+  PlatformIO handles both via `-t upload`.
