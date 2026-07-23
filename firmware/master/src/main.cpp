@@ -1,26 +1,29 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // AVL_CARL — MASTER / VCU node                  Board: NUCLEO-F767ZI (ID 0x01)
 //
-// Responsibilities (and nothing else):
-//   • Be the single command source/arbiter for the bus.
-//   • Take teleop input from the PC over USB serial (ST-LINK VCP) and mix it
-//     into per-wheel differential-drive commands (0x100, 20 ms).
-//   • Emit the periodic heartbeat the edge nodes watchdog on (0x010, 50 ms).
-//   • Latch/relay e-stop (0x000) and hold the bus-wide safe state.
-//   • Aggregate throttle status + encoder telemetry and stream it back to the PC.
-//   • TELEOP WATCHDOG: if the PC stops sending for TELEOP_TIMEOUT_MS (crash /
-//     unplug), force commands to zero so the kart stops. No-brake design.
+// The master is a DUMB PROXY between a companion computer (running ROS2) and
+// the CAN bus, plus a safety supervisor.
 //
-// This node does NOT drive any motor directly — it only speaks CAN + serial.
+//   Companion (framed binary over serial) <──> Master <──> CAN bus <──> edge nodes
+//
+// It does not do vehicle-level logic — no ASCII parsing, no differential mix,
+// no wheel arbitration. That all lives in ROS2 now. What it DOES do:
+//
+//   • Ingress: unwrap wire frames from the companion → drop matching CAN frame.
+//   • Egress:  wrap incoming CAN frames from edge nodes → send to the companion.
+//   • Emit the periodic heartbeat (0x010, 50 ms) — bus fail-safe for edge nodes.
+//   • Latch e-stop (0x000) and hold it in the heartbeat flags. Reset requires
+//     a master power-cycle. Deliberate — no software backdoor to un-latch.
+//   • TELEOP WATCHDOG: if the companion stops sending throttle commands for
+//     TELEOP_TIMEOUT_MS, force the outbound throttle command to zero. No-brake
+//     design => a stalled ROS2 stack must not leave the kart driving.
 //
 // CAN: STM32_CAN (bxCAN) on CAN1 remapped to PD0 = CAN1_RX, PD1 = CAN1_TX.
 //      Wire those to the TJA1051 transceiver. The master is the MIDDLE of the
 //      3-node bus -> its transceiver 120 Ω termination must be DISABLED.
-//      (If you relocate CAN1, change the pin enum below: DEF=PA11/PA12,
-//       ALT=PB8/PB9, ALT_2=PD0/PD1.)
 //
-// Serial: the PC teleop talks to `Serial` (USART3 -> ST-LINK Virtual COM Port,
-//         the same USB cable used to flash the board) at 115200 8N1.
+// Serial: 921600 8N1 on USART3 (ST-LINK Virtual COM Port, same USB cable used
+//         to flash). Framed binary — see lib/carl_protocol/wire.h.
 // ─────────────────────────────────────────────────────────────────────────────
 #include <Arduino.h>
 #include <STM32_CAN.h>
@@ -28,38 +31,22 @@
 #include "carl_protocol.h"
 #include "heartbeat.h"
 #include "messages.h"
+#include "wire.h"
 
 using namespace carl;
 
 // ── CAN ─────────────────────────────────────────────────────────────────────
 STM32_CAN Can1(CAN1, ALT_2);  // ALT_2 = PD0 (RX) / PD1 (TX)
 
-// ── Teleop command state (in per-mille, [-1000, 1000]) ──────────────────────
-int16_t teleopVx = 0;  // forward(+) / reverse(-)
-int16_t teleopWz = 0;  // turn right(+) / left(-)
-bool estopLatched = false;
-
-// Bring-up single-wheel test mode: when testIdx is 0..3, ONLY that wheel slot is
-// commanded (others 0) so each motor can be identified/checked in isolation.
-// -1 = normal differential driving. Slot order: 0=FL, 1=FR, 2=RL, 3=RR.
-int testIdx = -1;
-int16_t testVal = 0;
+// ── State (kept small on purpose) ───────────────────────────────────────────
+ThrottleCmd currentCmd = {0, 0, 0, 0};  // last cmd from companion
+bool        estopLatched = false;
 
 HeartbeatTx hb(HEARTBEAT_PERIOD_MS);
-Watchdog teleopWatch(TELEOP_TIMEOUT_MS);
-
-// Latest telemetry from the throttle node (for streaming back to the PC).
-ThrottleStatus lastStatus = {TST_INIT, TF_NONE, 0, 0};
-EncoderFb lastEnc = {0, 0};
-bool haveStatus = false;
+Watchdog    teleopWatch(TELEOP_TIMEOUT_MS);
+WireParser  parser;
 
 uint32_t lastCmdMs = 0;
-uint32_t lastTlmMs = 0;
-
-// Serial line assembly.
-static const uint8_t LINE_MAX = 48;
-char lineBuf[LINE_MAX];
-uint8_t lineLen = 0;
 
 // ── CAN send ────────────────────────────────────────────────────────────────
 static void canSend(uint16_t id, const uint8_t* buf, uint8_t len) {
@@ -70,144 +57,85 @@ static void canSend(uint16_t id, const uint8_t* buf, uint8_t len) {
   Can1.write(msg);
 }
 
-static void sendEstopFrame() {
-  uint8_t buf[8];
-  uint8_t len = pack_estop(buf, ESTOP_OPERATOR);
-  canSend(CANID_ESTOP, buf, len);
+// ── Serial send (framed) ────────────────────────────────────────────────────
+static void wireSend(uint16_t msg_id, const uint8_t* payload, uint8_t len) {
+  uint8_t out[WIRE_MAX_FRAME];
+  uint8_t n = wire_frame(out, msg_id, payload, len);
+  Serial.write(out, n);
 }
 
-// Differential mix -> per-wheel command, then send 0x100.
+// ── Forward the current throttle command onto CAN (0x100) ───────────────────
 static void sendThrottleCmd() {
-  ThrottleCmd c = {0, 0, 0, 0};
-  if (!estopLatched) {
-    if (testIdx >= 0 && testIdx < 4) {
-      // Single-wheel bring-up: drive only the selected slot.
-      int16_t v[4] = {0, 0, 0, 0};
-      v[testIdx] = clampv<int16_t>(testVal, THROTTLE_MIN, THROTTLE_MAX);
-      c.fl = v[0];
-      c.fr = v[1];
-      c.rl = v[2];
-      c.rr = v[3];
-    } else {
-      int16_t left = clampv<int16_t>(teleopVx + teleopWz, THROTTLE_MIN, THROTTLE_MAX);
-      int16_t right = clampv<int16_t>(teleopVx - teleopWz, THROTTLE_MIN, THROTTLE_MAX);
-      c.fl = left;
-      c.rl = left;
-      c.fr = right;
-      c.rr = right;
-    }
-  }
+  ThrottleCmd c = estopLatched ? ThrottleCmd{0, 0, 0, 0} : currentCmd;
   uint8_t buf[8];
   uint8_t len = pack_throttle_cmd(buf, c);
   canSend(CANID_THROTTLE_CMD, buf, len);
 }
 
+// ── Heartbeat: send to CAN AND to companion ─────────────────────────────────
 static void sendHeartbeat(uint32_t now, bool teleopOk) {
   Heartbeat h;
   h.counter = hb.next(now);
   h.flags = HB_FLAG_OK;
-  if (teleopOk) h.flags |= HB_FLAG_TELEOP_OK;
+  if (teleopOk)     h.flags |= HB_FLAG_TELEOP_OK;
   if (estopLatched) h.flags |= HB_FLAG_ESTOP;
-  if (estopLatched)
-    h.mode = MODE_ESTOP;
-  else if (teleopVx != 0 || teleopWz != 0)
-    h.mode = MODE_TELEOP;
-  else
-    h.mode = MODE_IDLE;
+
+  const bool moving = currentCmd.fl || currentCmd.fr || currentCmd.rl || currentCmd.rr;
+  if (estopLatched)   h.mode = MODE_ESTOP;
+  else if (moving)    h.mode = MODE_TELEOP;
+  else                h.mode = MODE_IDLE;
+
   uint8_t buf[8];
   uint8_t len = pack_heartbeat(buf, h);
   canSend(CANID_HEARTBEAT, buf, len);
+  wireSend(CANID_HEARTBEAT, buf, len);
 }
 
-// ── Teleop serial parsing ───────────────────────────────────────────────────
-// Accepted lines (newline-terminated):
-//   D <vx> <wz>   drive, ints per-mille [-1000,1000]
-//   S             stop (vx = wz = 0)
-//   E             e-stop (latch safe state bus-wide)
-//   R             reset e-stop
-static void parseLine(char* s) {
-  // Skip leading spaces.
-  while (*s == ' ') s++;
-  char cmd = *s;
-
-  switch (cmd) {
-    case 'D':
-    case 'd': {
-      int vx = 0, wz = 0;
-      if (sscanf(s + 1, "%d %d", &vx, &wz) == 2) {
-        teleopVx = clampv<int16_t>((int16_t)vx, THROTTLE_MIN, THROTTLE_MAX);
-        teleopWz = clampv<int16_t>((int16_t)wz, THROTTLE_MIN, THROTTLE_MAX);
-        testIdx = -1;                // any normal drive cmd exits test mode
-        teleopWatch.feed(millis());  // valid command => link alive
-      }
-      break;
-    }
-    case 'M':  // single-wheel test: "M <index 0-3> <value>"
-    case 'm': {
-      int i = 0, v = 0;
-      if (sscanf(s + 1, "%d %d", &i, &v) == 2) {
-        testIdx = i;
-        testVal = (int16_t)v;
+// ── Ingress from companion ──────────────────────────────────────────────────
+static void handleWireFrame(uint16_t msg_id, const uint8_t* payload, uint8_t len) {
+  switch (msg_id) {
+    case CANID_THROTTLE_CMD: {
+      ThrottleCmd c;
+      if (unpack_throttle_cmd(payload, len, &c)) {
+        currentCmd = c;
         teleopWatch.feed(millis());
       }
       break;
     }
-    case 'S':
-    case 's':
-      teleopVx = 0;
-      teleopWz = 0;
-      testIdx = -1;
-      teleopWatch.feed(millis());
-      break;
-    case 'E':
-    case 'e':
+    case CANID_ESTOP:
       estopLatched = true;
-      teleopVx = 0;
-      teleopWz = 0;
-      testIdx = -1;
-      sendEstopFrame();  // fire the high-priority frame immediately
-      teleopWatch.feed(millis());
-      break;
-    case 'R':
-    case 'r':
-      estopLatched = false;
+      currentCmd = {0, 0, 0, 0};
+      // Fire the high-priority CAN frame immediately (don't wait for next tick).
+      canSend(CANID_ESTOP, payload, len);
       teleopWatch.feed(millis());
       break;
     default:
-      break;
+      break;  // ignore unknown IDs; forward-compat with future ROS2 msgs
   }
 }
 
 static void pollSerial() {
   while (Serial.available()) {
-    char ch = (char)Serial.read();
-    if (ch == '\n' || ch == '\r') {
-      if (lineLen > 0) {
-        lineBuf[lineLen] = '\0';
-        parseLine(lineBuf);
-        lineLen = 0;
-      }
-    } else if (lineLen < LINE_MAX - 1) {
-      lineBuf[lineLen++] = ch;
-    } else {
-      lineLen = 0;  // overflow -> drop the garbage line
-    }
+    uint8_t b = (uint8_t)Serial.read();
+    WireParser::Result r = parser.feed(b);
+    if (r.valid) handleWireFrame(r.msg_id, r.payload, r.len);
   }
 }
 
-// ── CAN receive ─────────────────────────────────────────────────────────────
+// ── CAN receive → forward to companion ──────────────────────────────────────
 static void pollCan() {
   CAN_message_t rx;
   while (Can1.read(rx)) {
     switch (rx.id) {
       case CANID_THROTTLE_STATUS:
-        if (unpack_throttle_status(rx.buf, rx.len, &lastStatus)) haveStatus = true;
-        break;
       case CANID_ENCODER_FB:
-        unpack_encoder_fb(rx.buf, rx.len, &lastEnc);
+      case CANID_STEERING_STATUS:
+        wireSend(rx.id, rx.buf, rx.len);
         break;
       case CANID_ESTOP:
-        estopLatched = true;  // someone else asserted e-stop
+        // Someone else asserted e-stop on the bus.
+        estopLatched = true;
+        wireSend(rx.id, rx.buf, rx.len);
         break;
       default:
         break;
@@ -215,48 +143,12 @@ static void pollCan() {
   }
 }
 
-// Human-readable + machine-parseable telemetry line for the teleop UI.
-static void streamTelemetry(bool teleopOk) {
-  Serial.print(F("TLM hb="));
-  Serial.print(hb.counter());
-  Serial.print(F(" mode="));
-  if (estopLatched)
-    Serial.print("ESTOP");
-  else if (testIdx >= 0)
-    Serial.print("TEST");
-  else
-    Serial.print(teleopVx || teleopWz ? "TELEOP" : "IDLE");
-  Serial.print(F(" test="));
-  Serial.print(testIdx);
-  Serial.print(F(" link="));
-  Serial.print(teleopOk ? 1 : 0);
-  Serial.print(F(" vx="));
-  Serial.print(teleopVx);
-  Serial.print(F(" wz="));
-  Serial.print(teleopWz);
-  Serial.print(F(" tstate="));
-  Serial.print(haveStatus ? lastStatus.state : 255);
-  Serial.print(F(" tflt="));
-  Serial.print(haveStatus ? lastStatus.faults : 0);
-  Serial.print(F(" L="));
-  Serial.print(haveStatus ? lastStatus.applied_left : 0);
-  Serial.print(F(" R="));
-  Serial.print(haveStatus ? lastStatus.applied_right : 0);
-  Serial.print(F(" encL="));
-  Serial.print(lastEnc.left_count);
-  Serial.print(F(" encR="));
-  Serial.println(lastEnc.right_count);
-}
-
 // ── Arduino entry points ────────────────────────────────────────────────────
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(921600);
 
   Can1.begin();
   Can1.setBaudRate(CAN_BITRATE);
-
-  Serial.println(F("AVL_CARL master/VCU (NUCLEO-F767ZI) online"));
-  Serial.println(F("Teleop: 'D vx wz' drive, 'S' stop, 'E' e-stop, 'R' reset"));
 }
 
 void loop() {
@@ -265,12 +157,10 @@ void loop() {
   pollSerial();
   pollCan();
 
-  // Teleop watchdog: stale link -> force zero (kart stops). E-stop, if latched,
-  // stays latched regardless of link.
+  // Teleop watchdog: stale companion → force zero commands (kart stops).
   const bool teleopOk = !teleopWatch.expired(now);
   if (!teleopOk) {
-    teleopVx = 0;
-    teleopWz = 0;
+    currentCmd = {0, 0, 0, 0};
   }
 
   if (now - lastCmdMs >= THROTTLE_CMD_PERIOD_MS) {
@@ -280,11 +170,5 @@ void loop() {
 
   if (hb.due(now)) {
     sendHeartbeat(now, teleopOk);
-  }
-
-  // Stream telemetry to the PC at ~10 Hz.
-  if (now - lastTlmMs >= 100) {
-    lastTlmMs = now;
-    streamTelemetry(teleopOk);
   }
 }

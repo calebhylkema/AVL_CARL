@@ -1,13 +1,15 @@
-// Host (native) unit tests for the AVL_CARL CAN message (de)serialization.
+// Host (native) unit tests for the AVL_CARL protocol.
 //   pio test -e native
 //
 // These run on the PC — no board required. They guard the single source of
 // truth in lib/carl_protocol so a sender and receiver can never drift on layout,
-// endianness, or sign handling.
+// endianness, sign handling, or wire framing.
 #include <unity.h>
+#include <string.h>
 
 #include "common.h"
 #include "messages.h"
+#include "wire.h"
 
 using namespace carl;
 
@@ -19,7 +21,6 @@ void test_i16_le_roundtrip() {
   uint8_t b[2];
   put_i16(b, -1234);
   TEST_ASSERT_EQUAL_INT16(-1234, get_i16(b));
-  // Confirm byte order is little-endian: -1 -> 0xFF 0xFF, 0x0102 low byte first.
   put_i16(b, 0x0102);
   TEST_ASSERT_EQUAL_UINT8(0x02, b[0]);
   TEST_ASSERT_EQUAL_UINT8(0x01, b[1]);
@@ -93,9 +94,66 @@ void test_heartbeat_roundtrip() {
   TEST_ASSERT_EQUAL_UINT8(in.mode, out.mode);
 }
 
-// ── Differential mix sanity (the master's core math) ────────────────────────
+// ── Wire framing ────────────────────────────────────────────────────────────
+void test_wire_frame_and_parse() {
+  const uint16_t id = CANID_THROTTLE_CMD;
+  ThrottleCmd cmd = {500, -500, 250, -250};
+  uint8_t payload[8];
+  uint8_t plen = pack_throttle_cmd(payload, cmd);
+
+  uint8_t frame[WIRE_MAX_FRAME];
+  uint8_t flen = wire_frame(frame, id, payload, plen);
+  TEST_ASSERT_EQUAL_UINT8(WIRE_HEADER_LEN + 8 + 1, flen);
+  TEST_ASSERT_EQUAL_UINT8(WIRE_SOF, frame[0]);
+
+  WireParser p;
+  WireParser::Result r = {false, 0, 0, nullptr};
+  for (uint8_t i = 0; i < flen; i++) {
+    r = p.feed(frame[i]);
+  }
+  TEST_ASSERT_TRUE(r.valid);
+  TEST_ASSERT_EQUAL_UINT16(id, r.msg_id);
+  TEST_ASSERT_EQUAL_UINT8(8, r.len);
+
+  ThrottleCmd out;
+  TEST_ASSERT_TRUE(unpack_throttle_cmd(r.payload, r.len, &out));
+  TEST_ASSERT_EQUAL_INT16(cmd.fl, out.fl);
+  TEST_ASSERT_EQUAL_INT16(cmd.rr, out.rr);
+}
+
+void test_wire_rejects_bad_crc() {
+  const uint16_t id = CANID_ESTOP;
+  uint8_t payload[1] = {ESTOP_OPERATOR};
+  uint8_t frame[WIRE_MAX_FRAME];
+  uint8_t flen = wire_frame(frame, id, payload, 1);
+
+  frame[flen - 1] ^= 0xFF;  // corrupt CRC
+
+  WireParser p;
+  WireParser::Result r = {false, 0, 0, nullptr};
+  for (uint8_t i = 0; i < flen; i++) r = p.feed(frame[i]);
+  TEST_ASSERT_FALSE(r.valid);
+}
+
+void test_wire_resyncs_after_garbage() {
+  const uint16_t id = CANID_HEARTBEAT;
+  Heartbeat hb_in = {7, HB_FLAG_OK, MODE_IDLE};
+  uint8_t payload[8];
+  uint8_t plen = pack_heartbeat(payload, hb_in);
+  uint8_t frame[WIRE_MAX_FRAME];
+  uint8_t flen = wire_frame(frame, id, payload, plen);
+
+  WireParser p;
+  // Feed junk that isn't SOF — parser should stay in S_SOF.
+  p.feed(0x00); p.feed(0x11); p.feed(0x22);
+  WireParser::Result r = {false, 0, 0, nullptr};
+  for (uint8_t i = 0; i < flen; i++) r = p.feed(frame[i]);
+  TEST_ASSERT_TRUE(r.valid);
+  TEST_ASSERT_EQUAL_UINT16(id, r.msg_id);
+}
+
+// ── Differential mix sanity (now lives in ROS2, but math is still valid) ────
 void test_clamp_and_mix() {
-  // left = vx + wz, right = vx - wz, clamped to [-1000, 1000].
   int16_t vx = 900, wz = 300;
   TEST_ASSERT_EQUAL_INT16(1000, clampv<int16_t>(vx + wz, THROTTLE_MIN, THROTTLE_MAX));
   TEST_ASSERT_EQUAL_INT16(600, clampv<int16_t>(vx - wz, THROTTLE_MIN, THROTTLE_MAX));
@@ -110,6 +168,9 @@ int main(int, char**) {
   RUN_TEST(test_throttle_status_roundtrip);
   RUN_TEST(test_encoder_fb_roundtrip);
   RUN_TEST(test_heartbeat_roundtrip);
+  RUN_TEST(test_wire_frame_and_parse);
+  RUN_TEST(test_wire_rejects_bad_crc);
+  RUN_TEST(test_wire_resyncs_after_garbage);
   RUN_TEST(test_clamp_and_mix);
   return UNITY_END();
 }

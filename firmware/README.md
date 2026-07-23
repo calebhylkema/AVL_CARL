@@ -1,68 +1,74 @@
 # AVL_CARL Firmware
 
-PlatformIO monorepo for the three CAN nodes.
+PlatformIO monorepo for the three CAN nodes. The master is a **dumb proxy**
+between a ROS2 companion computer (framed binary over serial) and the CAN bus;
+all vehicle-level logic (teleop mixing, arbitration, telemetry parsing) lives
+in the ROS2 workspace. Firmware only implements what has to run on the MCUs
+for safety and hardware I/O:
 
-**Phase 1 (differential drive) is implemented:** master + throttle nodes are functional;
-the steering node is a **safe-idle stub** (board unpowered, kart turns via differential
-drive). See [`../docs/wiring.md`](../docs/wiring.md) for the pin-level wiring and
-[`../docs/can-bus.md`](../docs/can-bus.md) for the locked message map.
+- **Master (NUCLEO-F767ZI)** — serial ↔ CAN proxy, heartbeat producer, e-stop
+  latch, teleop watchdog.
+- **Throttle (Teensy 4.1)** — 4× IBT_2 H-bridge control, 2× rear encoder
+  quadrature decode, fail-safe on heartbeat loss.
+- **Steering (Teensy 4.1)** — safe-idle stub (Phase 1 is differential drive).
 
-## Quick start (Phase 1 teleop)
-
-1. Flash the master (ST-LINK) and throttle (Teensy Loader):
-   `pio run -e master -t upload` and `pio run -e throttle -t upload`.
-2. With wheels **off the ground**, run the keyboard teleop against the master's USB serial:
-   ```bash
-   pip install pyserial
-   python test/teleop.py --port COM5      # use --list to find the port
-   ```
-   `1`–`4` set speed, `w/a/s/d` drive, `c` center, `x`/SPACE stop, `e`/`r` e-stop/reset.
-3. Run host unit tests for the protocol (no hardware): `pio test -e native`.
+See [`../docs/wiring.md`](../docs/wiring.md) for the pin-level wiring and
+[`../docs/can-bus.md`](../docs/can-bus.md) for the locked CAN message map.
+The wire framing between master ↔ companion is defined in
+[`lib/carl_protocol/wire.h`](lib/carl_protocol/wire.h) and mirrored in the ROS2
+workspace at `src/carl_bridge/carl_bridge/protocol.py`.
 
 ## Build / flash
 
 ```bash
-pio run -e throttle      # build/flash ONLY the throttle node
-pio run -e master        # build/flash ONLY the master node
-pio run -e steering      # build/flash ONLY the steering node
+pio run -e throttle      # build ONLY the throttle node
+pio run -e master        # build ONLY the master node
+pio run -e steering      # build ONLY the steering node
 pio run                  # build ALL three nodes
+
+pio run -e throttle -t upload    # flash a connected Teensy throttle node
+pio run -e master   -t upload    # flash the NUCLEO over ST-LINK
+pio run -e steering -t upload    # flash a connected Teensy steering node
 ```
 
-> `pio run -e throttle` builds/flashes just that node; `pio run` builds all three.
+## Host unit tests
 
-Add `-t upload` to flash a connected board (e.g. `pio run -e throttle -t upload`),
-and `pio run -e throttle -t monitor` (or `pio device monitor`) for the serial console.
+Guards the shared protocol definitions and the wire framing. No hardware.
+
+```bash
+pio test -e native
+```
 
 ## Layout
 
 ```
 firmware/
-├── platformio.ini       # one [env] per node — builds all 3 from one config
-├── lib/                 # SHARED code (single source of truth across nodes)
-│   ├── carl_protocol/   # CAN IDs, node IDs, bitrate, heartbeat/e-stop constants
-│   │   ├── carl_protocol.h
-│   │   └── messages.h   # struct <-> CAN frame (de)serialization
-│   ├── heartbeat/       # shared heartbeat + watchdog fail-safe logic
-│   └── common/          # shared types, utils, fixed-point helpers
-├── master/   src/main.cpp   include/   # NUCLEO-F767ZI — VCU / arbiter
-├── throttle/ src/main.cpp   include/   # Teensy 4.1 — 4-motor drive + encoders
-├── steering/ src/main.cpp   include/   # Teensy 4.1 — CL57T stepper
-└── test/                # host-run unit tests (e.g. message pack/unpack)
+├── platformio.ini       # one [env] per node
+├── lib/                 # SHARED code — single source of truth across nodes
+│   ├── carl_protocol/
+│   │   ├── carl_protocol.h  # CAN IDs, timing, enums
+│   │   ├── messages.h        # struct <-> CAN payload (de)serialization
+│   │   └── wire.h            # serial framing (SOF + CRC8), ROS2 companion link
+│   ├── heartbeat/       # HeartbeatTx producer + Watchdog consumer
+│   └── common/          # little-endian byte helpers, clamp, map
+├── master/   src/main.cpp     # NUCLEO-F767ZI — serial↔CAN proxy
+├── throttle/ src/main.cpp     # Teensy 4.1 — motor drive + encoders
+├── steering/ src/main.cpp     # Teensy 4.1 — safe-idle stub
+└── test/                # host-run Unity tests
 ```
 
 ## Notes
 
-- **Shared `lib/` is the point.** The CAN message definitions in `carl_protocol/` are the
-  single source of truth — every node depends on them so senders and receivers can't drift.
-  Keep these in sync with [`../docs/can-bus.md`](../docs/can-bus.md).
+- **Shared `lib/` is the point.** Every node includes `carl_protocol.h`, so
+  senders and receivers cannot drift on IDs, timing, or byte layout. `wire.h`
+  is the same discipline for the companion link.
 - **Two chip families, one build system.** Master = STM32 (`platform = ststm32`),
-  throttle & steering = Teensy 4.1 (`platform = teensy`). PlatformIO builds both from this
-  one `platformio.ini`.
-- The `framework = arduino` lines are a sensible default for bring-up; the master can be
-  switched to the STM32Cube/HAL framework later if needed.
-- **CAN libraries:** Teensy nodes use the core-bundled `FlexCAN_T4`; the STM32 master uses
-  `pazi88/STM32_CAN` (pulled in via `lib_deps`). The throttle node uses
-  `paulstoffregen/Encoder` for the rear wheel quadrature.
-- **Boot/flash protocols differ per chip** — Teensy uses the HalfKay bootloader (Teensy
-  Loader; tap the button if it doesn't auto-reboot), the NUCLEO uses on-board ST-LINK (SWD).
-  PlatformIO handles both via `-t upload`.
+  throttle & steering = Teensy 4.1 (`platform = teensy`).
+- **CAN libraries:** Teensy nodes use the core-bundled `FlexCAN_T4`; the STM32
+  master uses `pazi88/STM32_CAN`. The throttle node uses `paulstoffregen/Encoder`.
+- **Boot/flash protocols differ per chip** — Teensy uses HalfKay (Teensy Loader;
+  tap the button if it doesn't auto-reboot), the NUCLEO uses on-board ST-LINK
+  (SWD). PlatformIO handles both via `-t upload`.
+- **E-stop is one-way from software.** Once latched (via CAN `0x000` or a wire
+  frame from ROS2), the master holds it until power cycle. There is no software
+  reset command — a deliberate safety choice given the no-brake design.
