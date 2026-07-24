@@ -12,8 +12,9 @@
 //   • Ingress: unwrap wire frames from the companion → drop matching CAN frame.
 //   • Egress:  wrap incoming CAN frames from edge nodes → send to the companion.
 //   • Emit the periodic heartbeat (0x010, 50 ms) — bus fail-safe for edge nodes.
-//   • Latch e-stop (0x000) and hold it in the heartbeat flags. Reset requires
-//     a master power-cycle. Deliberate — no software backdoor to un-latch.
+//   • Latch e-stop (0x000) and hold it in the heartbeat flags. Software can
+//     clear the latch by sending an ESTOP frame with reason=0 (REASON_RESET).
+//     Any nonzero reason SETS the latch; reason=0 CLEARS it.
 //   • TELEOP WATCHDOG: if the companion stops sending throttle commands for
 //     TELEOP_TIMEOUT_MS, force the outbound throttle command to zero. No-brake
 //     design => a stalled ROS2 stack must not leave the kart driving.
@@ -103,10 +104,17 @@ static void handleWireFrame(uint16_t msg_id, const uint8_t* payload, uint8_t len
       break;
     }
     case CANID_ESTOP:
-      estopLatched = true;
-      currentCmd = {0, 0, 0, 0};
-      // Fire the high-priority CAN frame immediately (don't wait for next tick).
-      canSend(CANID_ESTOP, payload, len);
+      if (len >= 1 && payload[0] == 0) {
+        // reason 0 = CLEAR the latch. Next heartbeat drops HB_FLAG_ESTOP so
+        // edge nodes clear their own latch via the heartbeat handler. Do NOT
+        // forward the clear onto CAN — the heartbeat carries the semantics.
+        estopLatched = false;
+      } else {
+        estopLatched = true;
+        currentCmd = {0, 0, 0, 0};
+        // Fire the high-priority CAN frame immediately (don't wait for next tick).
+        canSend(CANID_ESTOP, payload, len);
+      }
       teleopWatch.feed(millis());
       break;
     default:
@@ -143,12 +151,27 @@ static void pollCan() {
   }
 }
 
+// Enable STM32 bxCAN's automatic bus-off recovery (ABOM). Without this bit,
+// once the TEC hits 256 (from motor-noise-induced errors, transceiver dropouts,
+// etc.) the peripheral goes bus-off and stays there until manual reset. With
+// ABOM set, hardware auto-recovers after 128 * 11 recessive bit times
+// (~3 ms @ 500 kbit/s). pazi88's STM32_CAN library does not set this by
+// default. Must be written while INRQ=1 (initialization mode).
+static void enableCanAutoBusOffRecovery() {
+  CAN1->MCR |= CAN_MCR_INRQ;                       // request init mode
+  while (!(CAN1->MSR & CAN_MSR_INAK)) { }          // wait for ack
+  CAN1->MCR |= CAN_MCR_ABOM;                       // enable auto bus-off management
+  CAN1->MCR &= ~CAN_MCR_INRQ;                      // leave init mode
+  while (CAN1->MSR & CAN_MSR_INAK) { }             // wait for normal mode
+}
+
 // ── Arduino entry points ────────────────────────────────────────────────────
 void setup() {
   Serial.begin(921600);
 
   Can1.begin();
   Can1.setBaudRate(CAN_BITRATE);
+  enableCanAutoBusOffRecovery();
 }
 
 void loop() {
