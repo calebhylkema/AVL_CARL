@@ -46,6 +46,21 @@ build/
 *.tmp
 
 # ─────────────────────────────────────────────────────────────
+# ROS 2 / colcon workspace output
+# ─────────────────────────────────────────────────────────────
+install/
+log/
+# build/ is already ignored above (covers colcon build/ too)
+
+# ─────────────────────────────────────────────────────────────
+# Presentation / poster build artifacts (kept local, not in the repo)
+# ─────────────────────────────────────────────────────────────
+*.pptx
+docs/render/
+docs/build_presentation.py
+docs/render_slides.ps1
+
+# ─────────────────────────────────────────────────────────────
 # Editors / IDEs
 # ─────────────────────────────────────────────────────────────
 .vscode/

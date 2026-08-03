@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>carl_bridge</name>
+  <version>0.0.0</version>
+  <description>
+    Serial to ROS 2 bridge for AVL_CARL. Connects the Jetson Nano companion computer
+    to the STM32 master over a framed binary serial link, exposing throttle/steering
+    commands and vehicle telemetry as ROS 2 topics. Placeholder scaffold.
+  </description>
+  <maintainer email="calebhylkema6@gmail.com">Caleb Hylkema</maintainer>
+  <!-- License TBD by the AVL team. -->
+  <license>TODO</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>python3-serial</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
