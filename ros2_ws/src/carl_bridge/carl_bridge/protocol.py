@@ -1,37 +1,79 @@
-"""Wire framing for the Jetson <-> STM32 master serial link.
+"""Framing and packing for the master <-> companion computer link.
 
-PLACEHOLDER — mirror this against the firmware source of truth:
-    firmware/lib/carl_protocol/wire.h   (SOF + length + CRC8 framing)
-    firmware/lib/carl_protocol/carl_protocol.h   (CAN IDs, enums)
+Frame format (mirrors CAN semantics so firmware translation is trivial):
 
-Keep the framing/IDs here byte-for-byte identical to the firmware, or the master
-will drop frames. Fill in the real implementation from wire.h.
+    [SOF=0xAA][MSG_ID: u16 LE][LEN: u8][PAYLOAD ...][CRC8]
+
+MSG_IDs reuse the CAN IDs from docs/can-bus.md so the master just proxies
+between wire format and CAN frames.
 """
+from __future__ import annotations
 
-# --- Serial link -------------------------------------------------------------
-BAUD = 921600           # USART3 on the master (ST-LINK Virtual COM Port)
-SOF = 0xAB              # TODO: confirm start-of-frame byte against wire.h
+import struct
 
-# --- CAN IDs (mirror carl_protocol.h) ---------------------------------------
-CAN_ESTOP = 0x000
-CAN_HEARTBEAT = 0x010
-CAN_THROTTLE_CMD = 0x100
-CAN_STEERING_CMD = 0x110
-CAN_THROTTLE_STATUS = 0x200
-CAN_ENCODER_FEEDBACK = 0x210
-CAN_STEERING_STATUS = 0x220
+SOF = 0xAA
+
+MSG_ESTOP = 0x000
+MSG_HEARTBEAT = 0x010
+MSG_THROTTLE_CMD = 0x100
+MSG_THROTTLE_STATUS = 0x200
+MSG_ENCODER_FEEDBACK = 0x210
 
 
-def crc8(data: bytes) -> int:
-    """TODO: implement the same CRC8 polynomial used in wire.h."""
-    raise NotImplementedError("Port CRC8 from firmware/lib/carl_protocol/wire.h")
+def crc8(data: bytes, poly: int = 0x07) -> int:
+    crc = 0
+    for b in data:
+        crc ^= b
+        for _ in range(8):
+            crc = ((crc << 1) ^ poly) & 0xFF if crc & 0x80 else (crc << 1) & 0xFF
+    return crc
 
 
-def encode_frame(can_id: int, payload: bytes) -> bytes:
-    """Wrap a CAN frame into a serial wire frame. TODO: match wire.h."""
-    raise NotImplementedError("Implement wire framing to match firmware")
+def frame(msg_id: int, payload: bytes) -> bytes:
+    header = struct.pack('<BHB', SOF, msg_id, len(payload))
+    body = header + payload
+    return body + bytes([crc8(body)])
 
 
-def decode_frame(buf: bytes):
-    """Parse a serial wire frame into (can_id, payload). TODO: match wire.h."""
-    raise NotImplementedError("Implement wire de-framing to match firmware")
+def pack_throttle_cmd(fl: float, fr: float, rl: float, rr: float) -> bytes:
+    """Wheel commands normalized [-1.0, 1.0] -> int16 per-mille."""
+    def q(x: float) -> int:
+        return max(-1000, min(1000, int(round(x * 1000))))
+    return struct.pack('<hhhh', q(fl), q(fr), q(rl), q(rr))
+
+
+def pack_estop(reason: int) -> bytes:
+    return struct.pack('<B', reason)
+
+
+class Parser:
+    """Incremental byte-stream parser. Feed bytes, yields (msg_id, payload)."""
+
+    def __init__(self):
+        self._buf = bytearray()
+
+    def feed(self, data: bytes):
+        self._buf.extend(data)
+        while True:
+            # scan for SOF
+            i = self._buf.find(SOF)
+            if i < 0:
+                self._buf.clear()
+                return
+            if i > 0:
+                del self._buf[:i]
+            if len(self._buf) < 4:
+                return
+            msg_id, length = struct.unpack('<HB', bytes(self._buf[1:4]))
+            frame_len = 4 + length + 1
+            if len(self._buf) < frame_len:
+                return
+            body = bytes(self._buf[:frame_len - 1])
+            expected = self._buf[frame_len - 1]
+            if crc8(body) == expected:
+                payload = bytes(self._buf[4:4 + length])
+                del self._buf[:frame_len]
+                yield msg_id, payload
+            else:
+                # bad CRC — drop SOF byte and retry
+                del self._buf[0]
