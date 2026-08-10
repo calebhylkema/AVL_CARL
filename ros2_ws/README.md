@@ -14,18 +14,22 @@ Jetson Nano (this workspace)  ──UART framed binary──▶  STM32 master  �
 ```
 ros2_ws/
 └── src/
-    └── carl_bridge/          ← serial ↔ ROS 2 bridge (placeholder scaffold)
-        ├── package.xml
-        ├── setup.py
-        ├── setup.cfg
-        └── carl_bridge/
-            ├── protocol.py    ← wire framing, mirrors firmware/lib/carl_protocol/wire.h
-            └── bridge_node.py ← ROS 2 node: serial <-> topics
+    ├── carl_msgs/            ← custom interfaces (throttle cmd/status, encoder, e-stop, heartbeat)
+    ├── carl_bridge/          ← serial ↔ ROS 2 bridge (protocol, transports, bridge node)
+    │   ├── carl_bridge/
+    │   │   ├── protocol.py     ← wire framing, mirrors firmware/lib/carl_protocol/wire.h
+    │   │   ├── transports.py   ← serial transport abstraction
+    │   │   └── bridge_node.py  ← ROS 2 node: serial <-> topics
+    │   ├── config/bridge.yaml
+    │   └── launch/bridge.launch.py
+    ├── carl_teleop/          ← teleop drivers
+    │   ├── carl_teleop/
+    │   │   ├── keyboard_teleop_node.py
+    │   │   └── joy_teleop_node.py
+    │   ├── config/teleop.yaml
+    │   └── launch/teleop.launch.py
+    └── carl_bringup/         ← top-level launch (carl.launch.py)
 ```
-
-> **Status:** placeholder scaffold. The real bridge/teleop/telemetry packages are
-> developed on the Jetson and will be committed here. Drop additional packages under
-> `src/`.
 
 ## Build & run
 
@@ -33,7 +37,13 @@ ros2_ws/
 cd ros2_ws
 colcon build --symlink-install
 source install/setup.bash
-ros2 run carl_bridge bridge_node
+
+# Bring up the whole stack
+ros2 launch carl_bringup carl.launch.py
+
+# Or run pieces individually
+ros2 launch carl_bridge bridge.launch.py
+ros2 launch carl_teleop teleop.launch.py
 ```
 
 ## Wire protocol
