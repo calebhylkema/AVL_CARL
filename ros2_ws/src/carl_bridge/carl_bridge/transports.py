@@ -62,5 +62,9 @@ def make_transport(kind: str, **kwargs) -> Transport:
     if kind == 'serial':
         return SerialTransport(kwargs['port'], kwargs['baud'])
     if kind == 'udp':
-        return UdpTransport(kwargs['remote_host'], kwargs['remote_port'], kwargs['local_port'])
+        return UdpTransport(
+            kwargs['remote_host'],
+            kwargs['remote_port'],
+            kwargs['local_port'],
+        )
     raise ValueError(f'unknown transport: {kind}')

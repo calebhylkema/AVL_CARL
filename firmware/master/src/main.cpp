@@ -18,6 +18,8 @@
 //   • TELEOP WATCHDOG: if the companion stops sending throttle commands for
 //     TELEOP_TIMEOUT_MS, force the outbound throttle command to zero. No-brake
 //     design => a stalled ROS2 stack must not leave the kart driving.
+//   • Read the local MPU-6500 and send wire-only motion telemetry to ROS2. IMU
+//     telemetry is never forwarded to CAN and never participates in control.
 //
 // CAN: STM32_CAN (bxCAN) on CAN1 remapped to PD0 = CAN1_RX, PD1 = CAN1_TX.
 //      Wire those to the TJA1051 transceiver. The master is the MIDDLE of the
@@ -28,16 +30,27 @@
 // ─────────────────────────────────────────────────────────────────────────────
 #include <Arduino.h>
 #include <STM32_CAN.h>
+#include <Wire.h>
 
 #include "carl_protocol.h"
 #include "heartbeat.h"
+#include "imu_telemetry.h"
 #include "messages.h"
+#include "mpu6500.h"
 #include "wire.h"
 
 using namespace carl;
 
 // ── CAN ─────────────────────────────────────────────────────────────────────
 STM32_CAN Can1(CAN1, ALT_2);  // ALT_2 = PD0 (RX) / PD1 (TX)
+
+// ── IMU hardware ────────────────────────────────────────────────────────────
+// The STM32 Arduino TwoWire constructor takes SDA first and SCL second. These
+// pins match the hardware configuration proven by the CubeMX bench firmware.
+TwoWire ImuWire(PB9, PB8);  // PB9 = SDA, PB8 = SCL
+
+static const pin_size_t IMU_INT_PIN = PD12;
+Mpu6500 imu;
 
 // ── State (kept small on purpose) ───────────────────────────────────────────
 ThrottleCmd currentCmd = {0, 0, 0, 0};  // last cmd from companion
@@ -48,6 +61,25 @@ Watchdog    teleopWatch(TELEOP_TIMEOUT_MS);
 WireParser  parser;
 
 uint32_t lastCmdMs = 0;
+
+// ── IMU state ───────────────────────────────────────────────────────────────
+// The ISR only sets imuDataReady. All I2C work remains in loop() so the handler
+// is short and cannot interfere with CAN, serial, or the Arduino Wire driver.
+static volatile bool imuDataReady = false;
+
+// These fields retain IMU health, the newest raw reading, and the sequence used
+// by the two wire telemetry frames. They never alter a CARL command or safety
+// decision.
+static bool imuInitialized = false;
+static bool imuSampleValid = false;
+static bool imuTelemetryPending = false;
+static uint8_t imuSequence = 0;
+static uint32_t imuReadErrorCount = 0;
+static Mpu6500RawSample latestImuSample = {0, 0, 0, 0, 0, 0, 0};
+
+static void imuDataReadyISR() {
+  imuDataReady = true;
+}
 
 // ── CAN send ────────────────────────────────────────────────────────────────
 static void canSend(uint16_t id, const uint8_t* buf, uint8_t len) {
@@ -63,6 +95,74 @@ static void wireSend(uint16_t msg_id, const uint8_t* payload, uint8_t len) {
   uint8_t out[WIRE_MAX_FRAME];
   uint8_t n = wire_frame(out, msg_id, payload, len);
   Serial.write(out, n);
+}
+
+// ── Local IMU acquisition and wire telemetry ───────────────────────────────
+// Read at most one pending sample during each loop pass. Copying and clearing
+// the interrupt flag happens in a very short critical section; the much slower
+// I2C burst read happens after interrupts have been restored.
+static void pollImu() {
+  if (!imuInitialized) return;
+
+  bool shouldRead = false;
+  noInterrupts();
+  if (imuDataReady) {
+    imuDataReady = false;
+    shouldRead = true;
+  }
+  interrupts();
+
+  if (!shouldRead) return;
+
+  Mpu6500RawSample sample;
+  if (imu.readSample(&sample)) {
+    // Expose a new sample only after the complete 14-byte transfer succeeds.
+    // The next function will send both wire halves with one sequence number.
+    latestImuSample = sample;
+    imuSampleValid = true;
+    imuTelemetryPending = true;
+  } else {
+    // Keep the previous sample in memory for diagnostics, but never retransmit
+    // it as new data after a failed read.
+    imuSampleValid = false;
+    imuTelemetryPending = false;
+    ++imuReadErrorCount;
+  }
+}
+
+// Send acceleration and gyroscope back-to-back over the existing framed binary
+// link. These messages are local master telemetry and are deliberately not sent
+// over CAN, so throttle and steering bus timing remains exactly as before.
+static void sendImuTelemetry() {
+  if (!imuTelemetryPending || !imuSampleValid) return;
+
+  const uint8_t status = IMU_STATUS_INITIALIZED | IMU_STATUS_SAMPLE_VALID;
+  const ImuAxisTelemetry accel = {
+      imuSequence,
+      status,
+      latestImuSample.accel_x,
+      latestImuSample.accel_y,
+      latestImuSample.accel_z,
+  };
+  const ImuAxisTelemetry gyro = {
+      imuSequence,
+      status,
+      latestImuSample.gyro_x,
+      latestImuSample.gyro_y,
+      latestImuSample.gyro_z,
+  };
+
+  uint8_t payload[8];
+  uint8_t len = pack_imu_axis(payload, accel);
+  wireSend(WIREID_IMU_ACCEL, payload, len);
+
+  len = pack_imu_axis(payload, gyro);
+  wireSend(WIREID_IMU_GYRO, payload, len);
+
+  // Increment only after both halves have been handed to the serial driver.
+  // Unsigned rollover from 255 to 0 is intentional and understood by the bridge.
+  imuTelemetryPending = false;
+  ++imuSequence;
 }
 
 // ── Forward the current throttle command onto CAN (0x100) ───────────────────
@@ -172,6 +272,20 @@ void setup() {
   Can1.begin();
   Can1.setBaudRate(CAN_BITRATE);
   enableCanAutoBusOffRecovery();
+
+  // Use the conservative 100 kHz bus rate validated by the bench firmware.
+  // IMU initialization failure is isolated: CARL's CAN, serial, heartbeat,
+  // e-stop, watchdog, and throttle behavior continue exactly as before.
+  ImuWire.begin();
+  ImuWire.setClock(100000);
+  pinMode(IMU_INT_PIN, INPUT);
+
+  imuInitialized = imu.begin(ImuWire);
+  if (imuInitialized) {
+    // The MPU-6500 output is configured active-high, so each complete sample
+    // produces the same rising-edge event already validated on PD12.
+    attachInterrupt(digitalPinToInterrupt(IMU_INT_PIN), imuDataReadyISR, RISING);
+  }
 }
 
 void loop() {
@@ -194,4 +308,10 @@ void loop() {
   if (hb.due(now)) {
     sendHeartbeat(now, teleopOk);
   }
+
+  // Keep all original command and safety work ahead of sensor acquisition and
+  // telemetry. An IMU transaction can therefore never delay work that was due
+  // at the start of this loop pass.
+  pollImu();
+  sendImuTelemetry();
 }

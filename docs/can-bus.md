@@ -46,6 +46,23 @@ little-endian.** Change the header and this table together.
 | `0x210` | Wheel encoder feedback | Throttle → Master | 20 ms | 8 | `0-3`:rear-L count · `4-7`:rear-R count (`int32`, signed quadrature counts) |
 | `0x220` | Steering status | Steering → Master | 50 ms | 2 | `0`:state(0=idle) · `1`:homed *(Phase 1: idle stub)* |
 
+### 3.1 Master-to-companion wire-only telemetry
+
+The master uses the same numeric-ID convention for locally measured telemetry
+sent over its framed serial/UDP link. The following messages are **not CAN
+frames** and do not add traffic to the vehicle CAN bus. Their payloads remain
+limited to eight bytes so the framing layer keeps one consistent maximum size.
+
+| Wire ID | Name | Direction | Period | Len | Payload (byte : field) |
+|---------|------|-----------|--------|-----|------------------------|
+| `0x230` | IMU acceleration | Master → Companion | data-ready, 100 Hz | 8 | `0`:sequence · `1`:status · `2-3`:X · `4-5`:Y · `6-7`:Z (`int16`, raw ±2 g scale) |
+| `0x231` | IMU gyroscope | Master → Companion | data-ready, 100 Hz | 8 | `0`:sequence · `1`:status · `2-3`:X · `4-5`:Y · `6-7`:Z (`int16`, raw ±250°/s scale) |
+
+Both halves of one IMU sample use the same rolling `uint8` sequence number.
+Status bit 0 means the sensor initialized successfully; bit 1 means the sample
+is valid. The companion must receive both valid halves with matching sequence
+numbers before publishing one combined IMU sample.
+
 **Flag / enum encodings** (see `carl_protocol.h`):
 - Heartbeat `flags`: bit0 `OK`, bit1 `ESTOP`, bit2 `TELEOP_OK`. `mode`: 0 idle, 1 teleop, 2 estop.
 - Throttle `state`: 0 init, 1 idle, 2 driving, 3 safe-stop, 4 estop. `faults`: bit0 heartbeat-lost, bit1 estop.

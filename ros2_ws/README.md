@@ -52,3 +52,8 @@ The serial framing (SOF + length + CRC8) between the Jetson and the STM32 master
 single source of truth in [`../firmware/lib/carl_protocol/wire.h`](../firmware/lib/carl_protocol/wire.h)
 and must be mirrored in [`src/carl_bridge/carl_bridge/protocol.py`](src/carl_bridge/carl_bridge/protocol.py).
 Keep the two in sync. The CAN message/ID map is in [`../docs/can-bus.md`](../docs/can-bus.md).
+
+The master also emits two wire-only MPU-6500 messages that are not placed on
+CAN: `0x230` carries raw acceleration and `0x231` carries raw angular velocity.
+Matching sequence numbers let `carl_bridge` combine both halves and publish the
+standard ROS 2 topic `/carl/imu` with message type `sensor_msgs/msg/Imu`.

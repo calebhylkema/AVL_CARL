@@ -7,7 +7,8 @@ in the ROS2 workspace. Firmware only implements what has to run on the MCUs
 for safety and hardware I/O:
 
 - **Master (NUCLEO-F767ZI)** — serial ↔ CAN proxy, heartbeat producer, e-stop
-  latch, teleop watchdog.
+  latch, teleop watchdog, and local MPU-6500 acquisition. IMU samples use
+  wire-only telemetry and do not add traffic to the vehicle CAN bus.
 - **Throttle (Teensy 4.1)** — 4× IBT_2 H-bridge control, 2× rear encoder
   quadrature decode, fail-safe on heartbeat loss.
 - **Steering (Teensy 4.1)** — safe-idle stub (Phase 1 is differential drive).

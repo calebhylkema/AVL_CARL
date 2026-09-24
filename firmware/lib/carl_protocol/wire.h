@@ -1,9 +1,10 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // wire.h — framed binary link between the master and a companion computer.
 //
-// The master is a dumb proxy: it forwards inbound wire frames onto the CAN bus,
-// and inbound CAN frames back over the wire. Msg IDs on the wire ARE the CAN
-// IDs, so no separate ID space to maintain.
+// Most traffic is proxied unchanged between the companion and CAN, so those
+// wire message IDs reuse their CAN IDs. The master may also send locally
+// measured, wire-only telemetry such as the two IMU messages declared in
+// imu_telemetry.h. Wire-only messages are never placed on the vehicle CAN bus.
 //
 // Frame layout (little-endian):
 //   [SOF=0xAA][MSG_ID: u16 LE][LEN: u8][PAYLOAD ... LEN bytes][CRC8]

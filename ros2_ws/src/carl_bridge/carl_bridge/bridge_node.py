@@ -5,6 +5,7 @@ import struct
 
 import rclpy
 from rclpy.node import Node
+from sensor_msgs.msg import Imu
 
 from carl_msgs.msg import (
     CarlEncoderFeedback,
@@ -46,13 +47,37 @@ class BridgeNode(Node):
             )
 
         self._parser = protocol.Parser()
+        self._imu_assembler = protocol.ImuSampleAssembler()
 
-        self.create_subscription(CarlThrottleCmd, 'carl/throttle_cmd', self._on_throttle_cmd, 10)
-        self.create_subscription(CarlEstop, 'carl/estop', self._on_estop, 10)
+        self.create_subscription(
+            CarlThrottleCmd,
+            'carl/throttle_cmd',
+            self._on_throttle_cmd,
+            10,
+        )
+        self.create_subscription(
+            CarlEstop,
+            'carl/estop',
+            self._on_estop,
+            10,
+        )
 
-        self._pub_throttle_status = self.create_publisher(CarlThrottleStatus, 'carl/throttle_status', 10)
-        self._pub_encoders = self.create_publisher(CarlEncoderFeedback, 'carl/encoders', 10)
-        self._pub_heartbeat = self.create_publisher(CarlHeartbeat, 'carl/heartbeat', 10)
+        self._pub_throttle_status = self.create_publisher(
+            CarlThrottleStatus,
+            'carl/throttle_status',
+            10,
+        )
+        self._pub_encoders = self.create_publisher(
+            CarlEncoderFeedback,
+            'carl/encoders',
+            10,
+        )
+        self._pub_heartbeat = self.create_publisher(
+            CarlHeartbeat,
+            'carl/heartbeat',
+            10,
+        )
+        self._pub_imu = self.create_publisher(Imu, 'carl/imu', 10)
 
         poll_hz = self.get_parameter('poll_rate_hz').value
         self.create_timer(1.0 / poll_hz, self._poll)
@@ -60,8 +85,15 @@ class BridgeNode(Node):
         self.get_logger().info(f'carl_bridge up on transport={kind}')
 
     def _on_throttle_cmd(self, msg: CarlThrottleCmd):
-        payload = protocol.pack_throttle_cmd(msg.front_left, msg.front_right, msg.rear_left, msg.rear_right)
-        self._transport.send(protocol.frame(protocol.MSG_THROTTLE_CMD, payload))
+        payload = protocol.pack_throttle_cmd(
+            msg.front_left,
+            msg.front_right,
+            msg.rear_left,
+            msg.rear_right,
+        )
+        self._transport.send(
+            protocol.frame(protocol.MSG_THROTTLE_CMD, payload)
+        )
 
     def _on_estop(self, msg: CarlEstop):
         payload = protocol.pack_estop(msg.reason)
@@ -96,6 +128,38 @@ class BridgeNode(Node):
             m.header.stamp = stamp
             m.rear_left_counts, m.rear_right_counts = rl, rr
             self._pub_encoders.publish(m)
+        elif msg_id == protocol.MSG_IMU_ACCEL and len(payload) == 8:
+            sample = self._imu_assembler.add_accel(payload)
+            if sample is not None:
+                self._publish_imu(sample, stamp)
+        elif msg_id == protocol.MSG_IMU_GYRO and len(payload) == 8:
+            sample = self._imu_assembler.add_gyro(payload)
+            if sample is not None:
+                self._publish_imu(sample, stamp)
+
+    def _publish_imu(self, sample: protocol.ImuRawSample, stamp) -> None:
+        """Convert one paired raw sample and publish the standard ROS IMU type.
+
+        The MPU-6500 does not contain a magnetometer, and this bridge does not
+        estimate orientation. ROS represents that condition by placing -1 in
+        the first orientation covariance element. Acceleration and angular-
+        velocity covariance remain all-zero until measurements from the mounted
+        sensor provide defensible calibration values.
+        """
+        msg = Imu()
+        msg.header.stamp = stamp
+        msg.header.frame_id = 'imu_link'
+
+        msg.linear_acceleration.x = protocol.accel_raw_to_mps2(sample.accel[0])
+        msg.linear_acceleration.y = protocol.accel_raw_to_mps2(sample.accel[1])
+        msg.linear_acceleration.z = protocol.accel_raw_to_mps2(sample.accel[2])
+
+        msg.angular_velocity.x = protocol.gyro_raw_to_radps(sample.gyro[0])
+        msg.angular_velocity.y = protocol.gyro_raw_to_radps(sample.gyro[1])
+        msg.angular_velocity.z = protocol.gyro_raw_to_radps(sample.gyro[2])
+
+        msg.orientation_covariance[0] = -1.0
+        self._pub_imu.publish(msg)
 
 
 def main():

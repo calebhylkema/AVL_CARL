@@ -20,7 +20,6 @@ setup(
     maintainer_email='calebhylkema6@gmail.com',
     description='Bridge between ROS2 and the CARL NUCLEO master',
     license='MIT',
-    tests_require=['pytest'],
     entry_points={
         'console_scripts': [
             'bridge_node = carl_bridge.bridge_node:main',
