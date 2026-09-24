@@ -3,7 +3,7 @@
 //
 // The driver deliberately has a small job:
 //   • verify that the device at I2C address 0x68 identifies as an MPU-6500;
-//   • configure a 100 Hz accelerometer/gyroscope data-ready interrupt; and
+//   • configure a 100 Hz accelerometer/gyroscope sample stream; and
 //   • read one coherent 14-byte accelerometer/temperature/gyroscope sample.
 //
 // It does not print, publish, or send CAN/serial frames. Keeping communication

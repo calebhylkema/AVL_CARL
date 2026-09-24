@@ -19,6 +19,7 @@ wiring. **Common ground across all 24 V / 5 V / 3.3 V domains is mandatory.**
 | CAN TX | pin **22** (CAN1_TX) | **PD1** (CAN1_TX) |
 | CAN RX | pin **23** (CAN1_RX) | **PD0** (CAN1_RX) |
 | Teleop serial | — | ST-LINK **VCP** (USART3, PD8/PD9) over the USB cable |
+| MPU-6500 I2C | — | **PB9 SDA / PB8 SCL** |
 | Status LED | pin 13 (on-board) | on-board LED |
 
 ---
@@ -157,9 +158,31 @@ near the Teensy or the LV side.
 A single USB cable from the PC to the NUCLEO's ST-LINK port does **both**:
 
 1. Flashes the master (ST-LINK / SWD), and
-2. Exposes the **Virtual COM Port** the teleop script talks to (115200 8N1).
+2. Exposes the **Virtual COM Port** the ROS2 bridge talks to (921600 8N1).
 
 No extra wiring. Find the port with `python firmware/test/teleop.py --list`.
+
+### 4a. MPU-6500 ↔ master NUCLEO-F767ZI
+
+The master uses a dedicated Arduino `TwoWire(PB9, PB8)` instance at 100 kHz.
+PB9 is SDA and PB8 is SCL; the constructor order is significant.
+
+| MPU-6500 module pin | NUCLEO-F767ZI | Notes |
+|---------------------|---------------|-------|
+| `VCC` | 3.3 V | Do not power the sensor logic from 5 V |
+| `GND` | GND | Must share ground with the master and companion system |
+| `SDA` | PB9 | I2C data, address `0x68` |
+| `SCL` | PB8 | I2C clock, 100 kHz |
+| `AD0` | GND | Selects I2C address `0x68` |
+| `NCS` | 3.3 V | Holds the device in I2C mode |
+| `FSYNC` | GND | Unused input; the MPU-6500 datasheet specifies GND |
+| `INT` | not connected | Firmware polls the sample registers at 100 Hz |
+| `EDA`, `ECL` | not connected | Auxiliary sensor bus is unused |
+
+Most MPU-6500 breakout modules include SDA/SCL pull-ups. With power off, verify
+that each line has resistance in the roughly 2.2–10 kΩ range to 3.3 V. If the
+module has no pull-ups, add one 4.7 kΩ resistor from SDA to 3.3 V and one from
+SCL to 3.3 V. Do not add pull-ups to 5 V.
 
 ---
 

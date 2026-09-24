@@ -49,7 +49,9 @@ STM32_CAN Can1(CAN1, ALT_2);  // ALT_2 = PD0 (RX) / PD1 (TX)
 // pins match the hardware configuration proven by the CubeMX bench firmware.
 TwoWire ImuWire(PB9, PB8);  // PB9 = SDA, PB8 = SCL
 
-static const pin_size_t IMU_INT_PIN = PD12;
+// INT is intentionally not connected on CARL. The MPU-6500 is configured for
+// 100 Hz output and sampled from loop() at the same rate instead.
+static const uint32_t IMU_SAMPLE_PERIOD_MS = 10;
 Mpu6500 imu;
 
 // ── State (kept small on purpose) ───────────────────────────────────────────
@@ -63,10 +65,6 @@ WireParser  parser;
 uint32_t lastCmdMs = 0;
 
 // ── IMU state ───────────────────────────────────────────────────────────────
-// The ISR only sets imuDataReady. All I2C work remains in loop() so the handler
-// is short and cannot interfere with CAN, serial, or the Arduino Wire driver.
-static volatile bool imuDataReady = false;
-
 // These fields retain IMU health, the newest raw reading, and the sequence used
 // by the two wire telemetry frames. They never alter a CARL command or safety
 // decision.
@@ -74,12 +72,9 @@ static bool imuInitialized = false;
 static bool imuSampleValid = false;
 static bool imuTelemetryPending = false;
 static uint8_t imuSequence = 0;
+static uint32_t lastImuSampleMs = 0;
 static uint32_t imuReadErrorCount = 0;
 static Mpu6500RawSample latestImuSample = {0, 0, 0, 0, 0, 0, 0};
-
-static void imuDataReadyISR() {
-  imuDataReady = true;
-}
 
 // ── CAN send ────────────────────────────────────────────────────────────────
 static void canSend(uint16_t id, const uint8_t* buf, uint8_t len) {
@@ -98,21 +93,12 @@ static void wireSend(uint16_t msg_id, const uint8_t* payload, uint8_t len) {
 }
 
 // ── Local IMU acquisition and wire telemetry ───────────────────────────────
-// Read at most one pending sample during each loop pass. Copying and clearing
-// the interrupt flag happens in a very short critical section; the much slower
-// I2C burst read happens after interrupts have been restored.
-static void pollImu() {
+// Read at most one sample per 10 ms. Unsigned subtraction keeps the schedule
+// correct across millis() rollover.
+static void pollImu(uint32_t now) {
   if (!imuInitialized) return;
-
-  bool shouldRead = false;
-  noInterrupts();
-  if (imuDataReady) {
-    imuDataReady = false;
-    shouldRead = true;
-  }
-  interrupts();
-
-  if (!shouldRead) return;
+  if (now - lastImuSampleMs < IMU_SAMPLE_PERIOD_MS) return;
+  lastImuSampleMs = now;
 
   Mpu6500RawSample sample;
   if (imu.readSample(&sample)) {
@@ -278,13 +264,11 @@ void setup() {
   // e-stop, watchdog, and throttle behavior continue exactly as before.
   ImuWire.begin();
   ImuWire.setClock(100000);
-  pinMode(IMU_INT_PIN, INPUT);
 
   imuInitialized = imu.begin(ImuWire);
   if (imuInitialized) {
-    // The MPU-6500 output is configured active-high, so each complete sample
-    // produces the same rising-edge event already validated on PD12.
-    attachInterrupt(digitalPinToInterrupt(IMU_INT_PIN), imuDataReadyISR, RISING);
+    // Start the first timed read one full sample period after initialization.
+    lastImuSampleMs = millis();
   }
 }
 
@@ -312,6 +296,6 @@ void loop() {
   // Keep all original command and safety work ahead of sensor acquisition and
   // telemetry. An IMU transaction can therefore never delay work that was due
   // at the start of this loop pass.
-  pollImu();
+  pollImu(now);
   sendImuTelemetry();
 }

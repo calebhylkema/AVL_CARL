@@ -1,10 +1,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // mpu6500.cpp — MPU-6500 register access and startup configuration
 //
-// All bus traffic happens from normal foreground code. Nothing in this file is
-// called by the PD12 interrupt handler; the interrupt only asks the main loop to
-// perform a read. This is important because Arduino Wire transactions may wait
-// for interrupts and therefore must never run inside an interrupt handler.
+// All bus traffic happens from normal foreground code. The master polls this
+// driver from loop() because CARL intentionally leaves the module's INT output
+// unconnected.
 // ─────────────────────────────────────────────────────────────────────────────
 #include "mpu6500.h"
 
@@ -53,8 +52,8 @@ bool Mpu6500::begin(TwoWire& wire) {
   if (!readWhoAmI(&identity_)) return false;
   if (identity_ != EXPECTED_WHO_AM_I) return false;
 
-  // Disable data-ready while the remaining registers are being changed. This
-  // prevents PD12 from seeing a partially configured sample stream.
+  // Keep the optional data-ready output disabled while the remaining
+  // registers are being changed.
   if (!writeRegister(REG_INT_ENABLE, 0x00)) return false;
 
   // DLPF configuration 3 enables filtering and gives a 1 kHz internal sample
@@ -67,8 +66,8 @@ bool Mpu6500::begin(TwoWire& wire) {
   if (!writeRegister(REG_GYRO_CONFIG, 0x00)) return false;
   if (!writeRegister(REG_ACCEL_CONFIG, 0x00)) return false;
 
-  // The default interrupt format is active-high and push-pull, matching PD12's
-  // rising-edge input with no internal pull resistor.
+  // Keep the interrupt pin at its default electrical configuration even though
+  // it is not connected in CARL's wiring.
   if (!writeRegister(REG_INT_PIN_CFG, 0x00)) return false;
 
   // Reading INT_STATUS clears any data-ready condition accumulated while the
@@ -76,9 +75,9 @@ bool Mpu6500::begin(TwoWire& wire) {
   uint8_t ignored_status = 0;
   if (!readRegisters(REG_INT_STATUS, &ignored_status, 1)) return false;
 
-  // Bit 0 enables RAW_DATA_RDY_INT. From this point each complete sample raises
-  // the physical INT output connected to the STM32's PD12 pin.
-  if (!writeRegister(REG_INT_ENABLE, 0x01)) return false;
+  // Leave RAW_DATA_RDY_INT disabled because the physical INT output is not
+  // connected. The sample registers still update at the configured 100 Hz.
+  if (!writeRegister(REG_INT_ENABLE, 0x00)) return false;
 
   return true;
 }
