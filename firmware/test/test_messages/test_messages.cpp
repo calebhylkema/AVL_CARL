@@ -246,6 +246,37 @@ void test_imu_axis_telemetry_rejects_invalid_input() {
   TEST_ASSERT_EQUAL_INT16(5, output.z);
 }
 
+void test_imu_temperature_telemetry_layout_and_roundtrip() {
+  const ImuTemperatureTelemetry input = {0x5A, 0x03, -1234};
+  uint8_t payload[4] = {0};
+
+  TEST_ASSERT_EQUAL_UINT8(4, pack_imu_temperature(payload, input));
+  TEST_ASSERT_EQUAL_HEX8(0x5A, payload[0]);
+  TEST_ASSERT_EQUAL_HEX8(0x03, payload[1]);
+  TEST_ASSERT_EQUAL_HEX8(0x2E, payload[2]);
+  TEST_ASSERT_EQUAL_HEX8(0xFB, payload[3]);
+
+  ImuTemperatureTelemetry output;
+  TEST_ASSERT_TRUE(
+      unpack_imu_temperature(payload, sizeof(payload), &output));
+  TEST_ASSERT_EQUAL_UINT8(input.sequence, output.sequence);
+  TEST_ASSERT_EQUAL_UINT8(input.status, output.status);
+  TEST_ASSERT_EQUAL_INT16(input.temperature, output.temperature);
+}
+
+void test_imu_temperature_telemetry_rejects_invalid_input() {
+  uint8_t payload[5] = {0};
+  ImuTemperatureTelemetry output = {9, 8, 7};
+
+  TEST_ASSERT_FALSE(unpack_imu_temperature(payload, 3, &output));
+  TEST_ASSERT_FALSE(unpack_imu_temperature(payload, 5, &output));
+  TEST_ASSERT_FALSE(unpack_imu_temperature(nullptr, 4, &output));
+  TEST_ASSERT_FALSE(unpack_imu_temperature(payload, 4, nullptr));
+
+  TEST_ASSERT_EQUAL_UINT8(9, output.sequence);
+  TEST_ASSERT_EQUAL_INT16(7, output.temperature);
+}
+
 void test_imu_wire_ids_frame_and_parse() {
   const ImuAxisTelemetry input = {255, 0x03, 100, -200, 300};
   uint8_t payload[8];
@@ -271,6 +302,29 @@ void test_imu_wire_ids_frame_and_parse() {
   }
 }
 
+void test_imu_temperature_wire_frame_and_parse() {
+  const ImuTemperatureTelemetry input = {255, 0x03, 3339};
+  uint8_t payload[4];
+  const uint8_t payload_len = pack_imu_temperature(payload, input);
+  uint8_t frame[WIRE_MAX_FRAME];
+  const uint8_t frame_len = wire_frame(
+      frame, WIREID_IMU_TEMPERATURE, payload, payload_len);
+
+  WireParser parser;
+  WireParser::Result result = {false, 0, 0, nullptr};
+  for (uint8_t i = 0; i < frame_len; ++i) result = parser.feed(frame[i]);
+
+  TEST_ASSERT_TRUE(result.valid);
+  TEST_ASSERT_EQUAL_UINT16(WIREID_IMU_TEMPERATURE, result.msg_id);
+  TEST_ASSERT_EQUAL_UINT8(4, result.len);
+
+  ImuTemperatureTelemetry output;
+  TEST_ASSERT_TRUE(
+      unpack_imu_temperature(result.payload, result.len, &output));
+  TEST_ASSERT_EQUAL_UINT8(255, output.sequence);
+  TEST_ASSERT_EQUAL_INT16(3339, output.temperature);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_i16_le_roundtrip);
@@ -288,6 +342,9 @@ int main(int, char**) {
   RUN_TEST(test_mpu6500_sample_decode_rejects_invalid_input);
   RUN_TEST(test_imu_axis_telemetry_layout_and_roundtrip);
   RUN_TEST(test_imu_axis_telemetry_rejects_invalid_input);
+  RUN_TEST(test_imu_temperature_telemetry_layout_and_roundtrip);
+  RUN_TEST(test_imu_temperature_telemetry_rejects_invalid_input);
   RUN_TEST(test_imu_wire_ids_frame_and_parse);
+  RUN_TEST(test_imu_temperature_wire_frame_and_parse);
   return UNITY_END();
 }

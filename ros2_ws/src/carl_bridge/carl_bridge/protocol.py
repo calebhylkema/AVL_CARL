@@ -23,6 +23,7 @@ MSG_THROTTLE_STATUS = 0x200
 MSG_ENCODER_FEEDBACK = 0x210
 MSG_IMU_ACCEL = 0x230
 MSG_IMU_GYRO = 0x231
+MSG_IMU_TEMPERATURE = 0x232
 
 # These status bits mirror firmware/lib/carl_protocol/imu_telemetry.h. The
 # bridge publishes only complete samples marked valid by the STM32.
@@ -35,6 +36,8 @@ IMU_STATUS_SAMPLE_VALID = 0x02
 ACCEL_LSB_PER_G = 16384.0
 GYRO_LSB_PER_DEGREE_PER_SECOND = 131.0
 STANDARD_GRAVITY_MPS2 = 9.80665
+TEMPERATURE_LSB_PER_DEGREE_C = 333.87
+TEMPERATURE_OFFSET_DEGREE_C = 21.0
 
 AxisTuple = Tuple[int, int, int]
 
@@ -58,6 +61,15 @@ class ImuRawSample:
     status: int
     accel: AxisTuple
     gyro: AxisTuple
+
+
+@dataclass(frozen=True)
+class ImuTemperatureTelemetry:
+    """One raw MPU-6500 die-temperature sample from the STM32."""
+
+    sequence: int
+    status: int
+    raw_temperature: int
 
 
 def crc8(data: bytes, poly: int = 0x07) -> int:
@@ -105,6 +117,17 @@ def unpack_imu_axis(payload: bytes) -> ImuAxisTelemetry:
     return ImuAxisTelemetry(sequence, status, x, y, z)
 
 
+def unpack_imu_temperature(payload: bytes) -> ImuTemperatureTelemetry:
+    """Decode one exact four-byte MPU-6500 temperature payload."""
+    if len(payload) != 4:
+        raise ValueError(
+            f'IMU temperature payload must be 4 bytes, got {len(payload)}'
+        )
+
+    sequence, status, raw_temperature = struct.unpack('<BBh', payload)
+    return ImuTemperatureTelemetry(sequence, status, raw_temperature)
+
+
 def accel_raw_to_mps2(raw: int) -> float:
     """Convert one ±2 g accelerometer reading to metres per second squared."""
     return raw * STANDARD_GRAVITY_MPS2 / ACCEL_LSB_PER_G
@@ -114,6 +137,14 @@ def gyro_raw_to_radps(raw: int) -> float:
     """Convert one ±250 degree/second gyroscope reading to radians/second."""
     degrees_per_second = raw / GYRO_LSB_PER_DEGREE_PER_SECOND
     return math.radians(degrees_per_second)
+
+
+def temperature_raw_to_celsius(raw: int) -> float:
+    """Convert MPU-6500 TEMP_OUT to degrees Celsius."""
+    return (
+        raw / TEMPERATURE_LSB_PER_DEGREE_C
+        + TEMPERATURE_OFFSET_DEGREE_C
+    )
 
 
 class ImuSampleAssembler:

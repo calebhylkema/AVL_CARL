@@ -57,9 +57,10 @@ limited to eight bytes so the framing layer keeps one consistent maximum size.
 |---------|------|-----------|--------|-----|------------------------|
 | `0x230` | IMU acceleration | Master → Companion | data-ready, 100 Hz | 8 | `0`:sequence · `1`:status · `2-3`:X · `4-5`:Y · `6-7`:Z (`int16`, raw ±2 g scale) |
 | `0x231` | IMU gyroscope | Master → Companion | data-ready, 100 Hz | 8 | `0`:sequence · `1`:status · `2-3`:X · `4-5`:Y · `6-7`:Z (`int16`, raw ±250°/s scale) |
+| `0x232` | IMU die temperature | Master → Companion | data-ready, 100 Hz | 4 | `0`:sequence · `1`:status · `2-3`:temperature (`int16`, raw TEMP_OUT) |
 
-Both halves of one IMU sample use the same rolling `uint8` sequence number.
-Status bit 0 means the sensor initialized successfully; bit 1 means the sample
+All three frames from one IMU sample use the same rolling `uint8` sequence
+number. Status bit 0 means the sensor initialized successfully; bit 1 means the sample
 is valid. The companion must receive both valid halves with matching sequence
 numbers before publishing one combined IMU sample.
 

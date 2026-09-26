@@ -18,8 +18,8 @@
 //   • TELEOP WATCHDOG: if the companion stops sending throttle commands for
 //     TELEOP_TIMEOUT_MS, force the outbound throttle command to zero. No-brake
 //     design => a stalled ROS2 stack must not leave the kart driving.
-//   • Read the local MPU-6500 and send wire-only motion telemetry to ROS2. IMU
-//     telemetry is never forwarded to CAN and never participates in control.
+//   • Read the local MPU-6500 and send wire-only motion/temperature telemetry
+//     to ROS2. IMU telemetry is never forwarded to CAN or used for control.
 //
 // CAN: STM32_CAN (bxCAN) on CAN1 remapped to PD0 = CAN1_RX, PD1 = CAN1_TX.
 //      Wire those to the TJA1051 transceiver. The master is the MIDDLE of the
@@ -116,9 +116,9 @@ static void pollImu(uint32_t now) {
   }
 }
 
-// Send acceleration and gyroscope back-to-back over the existing framed binary
-// link. These messages are local master telemetry and are deliberately not sent
-// over CAN, so throttle and steering bus timing remains exactly as before.
+// Send acceleration, gyroscope, and die temperature back-to-back over the
+// existing framed binary link. These messages are local master telemetry and
+// are deliberately not sent over CAN.
 static void sendImuTelemetry() {
   if (!imuTelemetryPending || !imuSampleValid) return;
 
@@ -137,6 +137,11 @@ static void sendImuTelemetry() {
       latestImuSample.gyro_y,
       latestImuSample.gyro_z,
   };
+  const ImuTemperatureTelemetry temperature = {
+      imuSequence,
+      status,
+      latestImuSample.temperature,
+  };
 
   uint8_t payload[8];
   uint8_t len = pack_imu_axis(payload, accel);
@@ -145,7 +150,10 @@ static void sendImuTelemetry() {
   len = pack_imu_axis(payload, gyro);
   wireSend(WIREID_IMU_GYRO, payload, len);
 
-  // Increment only after both halves have been handed to the serial driver.
+  len = pack_imu_temperature(payload, temperature);
+  wireSend(WIREID_IMU_TEMPERATURE, payload, len);
+
+  // Increment only after all three frames have been handed to the serial driver.
   // Unsigned rollover from 255 to 0 is intentional and understood by the bridge.
   imuTelemetryPending = false;
   ++imuSequence;

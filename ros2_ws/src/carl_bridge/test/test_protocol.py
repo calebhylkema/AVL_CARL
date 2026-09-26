@@ -24,6 +24,11 @@ def imu_payload(sequence, status, x, y, z):
     return struct.pack('<BBhhh', sequence, status, x, y, z)
 
 
+def imu_temperature_payload(sequence, status, raw_temperature):
+    """Build temperature payload using the firmware's byte layout."""
+    return struct.pack('<BBh', sequence, status, raw_temperature)
+
+
 class ImuProtocolTests(unittest.TestCase):
     """Check IMU decoding, pairing, framing, and physical-unit conversion."""
 
@@ -41,6 +46,26 @@ class ImuProtocolTests(unittest.TestCase):
             with self.subTest(length=length):
                 with self.assertRaisesRegex(ValueError, 'must be 8 bytes'):
                     protocol.unpack_imu_axis(bytes(length))
+
+    def test_unpack_imu_temperature_signed_little_endian_value(self):
+        sample = protocol.unpack_imu_temperature(
+            imu_temperature_payload(0x5A, VALID_STATUS, -1234)
+        )
+
+        self.assertEqual(
+            sample,
+            protocol.ImuTemperatureTelemetry(
+                sequence=0x5A,
+                status=VALID_STATUS,
+                raw_temperature=-1234,
+            ),
+        )
+
+    def test_unpack_imu_temperature_requires_exact_length(self):
+        for length in (0, 3, 5):
+            with self.subTest(length=length):
+                with self.assertRaisesRegex(ValueError, 'must be 4 bytes'):
+                    protocol.unpack_imu_temperature(bytes(length))
 
     def test_assembler_pairs_accel_then_gyro(self):
         assembler = protocol.ImuSampleAssembler()
@@ -143,7 +168,15 @@ class ImuProtocolTests(unittest.TestCase):
             -math.pi / 180.0,
         )
 
-    def test_parser_preserves_two_back_to_back_imu_frames(self):
+    def test_temperature_conversion_uses_mpu6500_scale(self):
+        self.assertEqual(protocol.temperature_raw_to_celsius(0), 21.0)
+        self.assertAlmostEqual(
+            protocol.temperature_raw_to_celsius(3339),
+            31.000898553,
+            places=8,
+        )
+
+    def test_parser_preserves_three_back_to_back_imu_frames(self):
         accel = protocol.frame(
             protocol.MSG_IMU_ACCEL,
             imu_payload(11, VALID_STATUS, 100, 200, 300),
@@ -152,14 +185,19 @@ class ImuProtocolTests(unittest.TestCase):
             protocol.MSG_IMU_GYRO,
             imu_payload(11, VALID_STATUS, -100, -200, -300),
         )
+        temperature = protocol.frame(
+            protocol.MSG_IMU_TEMPERATURE,
+            imu_temperature_payload(11, VALID_STATUS, 3339),
+        )
 
-        parsed = list(protocol.Parser().feed(accel + gyro))
+        parsed = list(protocol.Parser().feed(accel + gyro + temperature))
 
         self.assertEqual(
             parsed,
             [
                 (protocol.MSG_IMU_ACCEL, accel[4:-1]),
                 (protocol.MSG_IMU_GYRO, gyro[4:-1]),
+                (protocol.MSG_IMU_TEMPERATURE, temperature[4:-1]),
             ],
         )
 

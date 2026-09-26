@@ -5,7 +5,7 @@ import struct
 
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Imu
+from sensor_msgs.msg import Imu, Temperature
 
 from carl_msgs.msg import (
     CarlEncoderFeedback,
@@ -78,6 +78,11 @@ class BridgeNode(Node):
             10,
         )
         self._pub_imu = self.create_publisher(Imu, 'carl/imu', 10)
+        self._pub_imu_temperature = self.create_publisher(
+            Temperature,
+            'carl/imu/temperature',
+            10,
+        )
 
         poll_hz = self.get_parameter('poll_rate_hz').value
         self.create_timer(1.0 / poll_hz, self._poll)
@@ -136,6 +141,10 @@ class BridgeNode(Node):
             sample = self._imu_assembler.add_gyro(payload)
             if sample is not None:
                 self._publish_imu(sample, stamp)
+        elif msg_id == protocol.MSG_IMU_TEMPERATURE and len(payload) == 4:
+            sample = protocol.unpack_imu_temperature(payload)
+            if sample.status & protocol.IMU_STATUS_SAMPLE_VALID:
+                self._publish_imu_temperature(sample, stamp)
 
     def _publish_imu(self, sample: protocol.ImuRawSample, stamp) -> None:
         """Convert one paired raw sample and publish the standard ROS IMU type.
@@ -160,6 +169,22 @@ class BridgeNode(Node):
 
         msg.orientation_covariance[0] = -1.0
         self._pub_imu.publish(msg)
+
+    def _publish_imu_temperature(
+        self,
+        sample: protocol.ImuTemperatureTelemetry,
+        stamp,
+    ) -> None:
+        """Publish the MPU-6500 die temperature in degrees Celsius."""
+        msg = Temperature()
+        msg.header.stamp = stamp
+        msg.header.frame_id = 'imu_link'
+        msg.temperature = protocol.temperature_raw_to_celsius(
+            sample.raw_temperature
+        )
+        # Zero is the ROS convention for unknown temperature variance.
+        msg.variance = 0.0
+        self._pub_imu_temperature.publish(msg)
 
 
 def main():

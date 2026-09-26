@@ -4,15 +4,17 @@
 // A complete MPU-6500 motion sample contains three accelerometer axes and three
 // gyroscope axes. Six signed 16-bit values need 12 bytes, but CARL deliberately
 // limits every framed wire payload to the classic-CAN limit of 8 bytes. The
-// sample is therefore split into two messages:
+// sample is therefore split into separate wire messages:
 //
 //   0x230: sequence, status, accelerometer X/Y/Z
 //   0x231: sequence, status, gyroscope X/Y/Z
+//   0x232: sequence, status, raw die temperature
 //
-// Both halves carry the same rolling sequence number. The companion computer
-// publishes a ROS IMU sample only after it has received both valid halves with
-// matching sequence numbers. These IDs travel only over the framed master-to-
-// companion wire link; the master does not place them on CARL's CAN bus.
+// All three frames carry the same rolling sequence number. The companion
+// publishes a ROS IMU sample only after it has received both valid motion
+// frames with matching sequence numbers; temperature is published separately.
+// These IDs travel only over the framed master-to-companion wire link; the
+// master does not place them on CARL's CAN bus.
 //
 // This file is pure C++ with no Arduino dependency, so the exact byte layout is
 // covered by the native unit tests. All multi-byte fields are little-endian,
@@ -30,6 +32,7 @@ namespace carl {
 // are separate from CanId because these frames never consume CAN bus bandwidth.
 static const uint16_t WIREID_IMU_ACCEL = 0x230;
 static const uint16_t WIREID_IMU_GYRO  = 0x231;
+static const uint16_t WIREID_IMU_TEMPERATURE = 0x232;
 
 // Status is a bitfield so later diagnostics can add information without
 // changing the fixed eight-byte payload. Normal samples carry both bits.
@@ -50,6 +53,16 @@ struct ImuAxisTelemetry {
   int16_t x;
   int16_t y;
   int16_t z;
+};
+
+// Temperature payload:
+//   byte 0    rolling sequence number shared with acceleration/gyroscope
+//   byte 1    ImuStatusFlag bitfield
+//   bytes 2-3 signed raw TEMP_OUT value
+struct ImuTemperatureTelemetry {
+  uint8_t sequence;
+  uint8_t status;
+  int16_t temperature;
 };
 
 inline uint8_t pack_imu_axis(uint8_t* buf, const ImuAxisTelemetry& sample) {
@@ -73,6 +86,27 @@ inline bool unpack_imu_axis(const uint8_t* buf, uint8_t len,
   decoded.x = get_i16(&buf[2]);
   decoded.y = get_i16(&buf[4]);
   decoded.z = get_i16(&buf[6]);
+
+  *sample = decoded;
+  return true;
+}
+
+inline uint8_t pack_imu_temperature(
+    uint8_t* buf, const ImuTemperatureTelemetry& sample) {
+  buf[0] = sample.sequence;
+  buf[1] = sample.status;
+  put_i16(&buf[2], sample.temperature);
+  return 4;
+}
+
+inline bool unpack_imu_temperature(
+    const uint8_t* buf, uint8_t len, ImuTemperatureTelemetry* sample) {
+  if (buf == nullptr || sample == nullptr || len != 4) return false;
+
+  ImuTemperatureTelemetry decoded;
+  decoded.sequence = buf[0];
+  decoded.status = buf[1];
+  decoded.temperature = get_i16(&buf[2]);
 
   *sample = decoded;
   return true;

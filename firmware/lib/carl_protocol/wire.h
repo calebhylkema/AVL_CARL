@@ -3,7 +3,7 @@
 //
 // Most traffic is proxied unchanged between the companion and CAN, so those
 // wire message IDs reuse their CAN IDs. The master may also send locally
-// measured, wire-only telemetry such as the two IMU messages declared in
+// measured, wire-only telemetry such as the IMU messages declared in
 // imu_telemetry.h. Wire-only messages are never placed on the vehicle CAN bus.
 //
 // Frame layout (little-endian):

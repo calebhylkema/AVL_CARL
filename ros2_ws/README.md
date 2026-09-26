@@ -53,7 +53,10 @@ single source of truth in [`../firmware/lib/carl_protocol/wire.h`](../firmware/l
 and must be mirrored in [`src/carl_bridge/carl_bridge/protocol.py`](src/carl_bridge/carl_bridge/protocol.py).
 Keep the two in sync. The CAN message/ID map is in [`../docs/can-bus.md`](../docs/can-bus.md).
 
-The master also emits two wire-only MPU-6500 messages that are not placed on
-CAN: `0x230` carries raw acceleration and `0x231` carries raw angular velocity.
-Matching sequence numbers let `carl_bridge` combine both halves and publish the
-standard ROS 2 topic `/carl/imu` with message type `sensor_msgs/msg/Imu`.
+The master also emits three wire-only MPU-6500 messages that are not placed on
+CAN: `0x230` carries raw acceleration, `0x231` carries raw angular velocity,
+and `0x232` carries raw die temperature. Matching sequence numbers let
+`carl_bridge` combine the motion frames and publish `/carl/imu` as
+`sensor_msgs/msg/Imu`; die temperature is converted to degrees Celsius and
+published separately on `/carl/imu/temperature` as
+`sensor_msgs/msg/Temperature`.
