@@ -4,7 +4,7 @@
 // Responsibilities (and nothing else):
 //   • Receive per-wheel throttle commands from the master over CAN (0x100).
 //   • Drive 4× IBT_2 (BTS7960) H-bridges -> 4× MY4845 motors (8 PWM + 4 enables).
-//   • Read the 2 rear wheel quadrature encoders and report counts (0x210).
+//   • Balance rear wheel RPM using the 2 encoders; report raw counts (0x210).
 //   • Report node status + applied command (0x200).
 //   • FAIL-SAFE: on heartbeat loss or e-stop, command 0 PWM and drop all enables
 //     (coast). No-brake design => "stop" is "command 0 and hold".
@@ -20,6 +20,7 @@
 #include "carl_protocol.h"
 #include "heartbeat.h"
 #include "messages.h"
+#include "rear_speed_sync.h"
 
 using namespace carl;
 
@@ -45,9 +46,12 @@ static const MotorPins kMotor[4] = {
 // command spins every corner forward. Applied in driveAll().
 static const int8_t kMotorDir[4] = {+1, -1, +1, -1};  // FL, FR, RL, RR
 
-// Rear wheel encoders (white=A, green=B). Quadrature on interrupt-capable pins.
-static const uint8_t ENC_RL_A = 14, ENC_RL_B = 15;
-static const uint8_t ENC_RR_A = 16, ENC_RR_B = 17;
+// Rear encoders (white=A, green=B). Hand rotation confirmed the physical LEFT
+// wheel drives 16/17, not 14/15. The old crossed assignment created positive
+// feedback: slowing RL/boosting RR increased the measured "left minus right".
+// Use physical wheel names for BOTH regulation and raw CAN count telemetry.
+static const uint8_t ENC_RL_A = 16, ENC_RL_B = 17;
+static const uint8_t ENC_RR_A = 14, ENC_RR_B = 15;
 
 static const uint8_t PIN_LED = LED_BUILTIN;  // pin 13 status LED
 
@@ -63,8 +67,11 @@ Encoder encRL(ENC_RL_A, ENC_RL_B);
 Encoder encRR(ENC_RR_A, ENC_RR_B);
 
 Watchdog hbWatch(HEARTBEAT_TIMEOUT_MS);
+Watchdog cmdWatch(THROTTLE_COMMAND_TIMEOUT_MS);
 
 ThrottleCmd cmd = {0, 0, 0, 0};  // last commanded per-wheel throttle (per-mille)
+ThrottleCmd appliedCmd = {0, 0, 0, 0};  // post-regulation, vehicle direction
+RearSpeedSync rearSpeedSync;
 bool estopLatched = false;
 uint8_t lastHbCounter = 0;
 bool haveHb = false;
@@ -75,8 +82,10 @@ uint32_t lastBlinkMs = 0;
 
 // ── Motor output ────────────────────────────────────────────────────────────
 // Apply a signed per-mille command to one IBT_2. armed=false -> coast (enable
-// low, both PWM 0). Sign selects direction; magnitude below the deadband coasts.
-static void applyMotor(const MotorPins& m, int16_t mille, bool armed) {
+// low, both PWM 0). Sign selects direction. Direct commands use the input
+// deadband; regulated commands were already gated before the speed correction.
+static void applyMotor(const MotorPins& m, int16_t mille, bool armed,
+                       bool regulated = false) {
   if (!armed) {
     analogWrite(m.rpwm, 0);
     analogWrite(m.lpwm, 0);
@@ -86,7 +95,7 @@ static void applyMotor(const MotorPins& m, int16_t mille, bool armed) {
 
   mille = clampv<int16_t>(mille, THROTTLE_MIN, THROTTLE_MAX);
 
-  if (abs_i16(mille) < THROTTLE_DEADBAND) {
+  if (mille == 0 || (!regulated && abs_i16(mille) < THROTTLE_DEADBAND)) {
     analogWrite(m.rpwm, 0);
     analogWrite(m.lpwm, 0);
     digitalWrite(m.en, HIGH);  // armed and holding zero
@@ -96,8 +105,8 @@ static void applyMotor(const MotorPins& m, int16_t mille, bool armed) {
   uint16_t duty = (uint16_t)((uint32_t)abs_i16(mille) * PWM_MAX / THROTTLE_MAX);
   digitalWrite(m.en, HIGH);
   if (mille > 0) {  // forward
-    analogWrite(m.rpwm, duty);
     analogWrite(m.lpwm, 0);
+    analogWrite(m.rpwm, duty);  // inactive direction always goes low first
   } else {  // reverse
     analogWrite(m.rpwm, 0);
     analogWrite(m.lpwm, duty);
@@ -105,10 +114,11 @@ static void applyMotor(const MotorPins& m, int16_t mille, bool armed) {
 }
 
 // Push all four wheel commands to hardware, applying per-motor direction signs.
-static void driveAll(const ThrottleCmd& c, bool armed) {
+static void driveAll(const ThrottleCmd& c, bool armed, bool regulatedRear = false) {
   const int16_t v[4] = {c.fl, c.fr, c.rl, c.rr};
   for (uint8_t i = 0; i < 4; i++) {
-    applyMotor(kMotor[i], (int16_t)(v[i] * kMotorDir[i]), armed);
+    applyMotor(kMotor[i], (int16_t)(v[i] * kMotorDir[i]), armed,
+               regulatedRear && i >= 2);
   }
 }
 
@@ -127,12 +137,14 @@ static void canSend(uint16_t id, const uint8_t* buf, uint8_t len) {
 }
 
 static void sendStatus(uint8_t state, uint8_t faults) {
-  // Report the side-average that was actually applied (front+rear / 2).
+  // PWM-equivalent side average, not measured motor motion/current.
+  // Disabled outputs must report zero even if an old command is retained.
+  const bool outputsEnabled = state == TST_IDLE || state == TST_DRIVING;
   ThrottleStatus s;
   s.state = state;
   s.faults = faults;
-  s.applied_left = (int16_t)((cmd.fl + cmd.rl) / 2);
-  s.applied_right = (int16_t)((cmd.fr + cmd.rr) / 2);
+  s.applied_left = outputsEnabled ? (int16_t)((appliedCmd.fl + appliedCmd.rl) / 2) : 0;
+  s.applied_right = outputsEnabled ? (int16_t)((appliedCmd.fr + appliedCmd.rr) / 2) : 0;
   uint8_t buf[8];
   uint8_t len = pack_throttle_status(buf, s);
   canSend(CANID_THROTTLE_STATUS, buf, len);
@@ -170,7 +182,14 @@ static void handleFrame(const CAN_message_t& msg) {
 
     case CANID_THROTTLE_CMD: {
       ThrottleCmd c;
-      if (unpack_throttle_cmd(msg.buf, msg.len, &c)) cmd = c;
+      if (unpack_throttle_cmd(msg.buf, msg.len, &c)) {
+        // Clamp before abs_i16/sign operations (including malformed INT16_MIN).
+        cmd = {clampv<int16_t>(c.fl, THROTTLE_MIN, THROTTLE_MAX),
+               clampv<int16_t>(c.fr, THROTTLE_MIN, THROTTLE_MAX),
+               clampv<int16_t>(c.rl, THROTTLE_MIN, THROTTLE_MAX),
+               clampv<int16_t>(c.rr, THROTTLE_MIN, THROTTLE_MAX)};
+        cmdWatch.feed(millis());
+      }
       break;
     }
 
@@ -202,15 +221,17 @@ void setup() {
 }
 
 void loop() {
-  const uint32_t now = millis();
-
   // 1) Drain all pending CAN frames.
   CAN_message_t rx;
   while (can1.read(rx)) handleFrame(rx);
+  // Frame handlers feed watchdogs using millis(). Read 'now' AFTER draining
+  // so crossing a millisecond boundary cannot make a fresh feed look expired.
+  const uint32_t now = millis();
 
   // 2) Decide armed state. Safe state wins over everything.
   const bool hbLost = hbWatch.expired(now);
-  const bool armed = haveHb && !hbLost && !estopLatched;
+  const bool cmdLost = cmdWatch.expired(now);
+  const bool armed = haveHb && !hbLost && !cmdLost && !estopLatched;
 
   uint8_t state;
   uint8_t faults = TF_NONE;
@@ -222,6 +243,9 @@ void loop() {
   } else if (hbLost) {
     state = TST_SAFE_STOP;
     faults |= TF_HEARTBEAT_LOST;
+  } else if (cmdLost) {
+    state = TST_SAFE_STOP;
+    faults |= TF_COMMAND_LOST;
   } else {
     const bool moving = abs_i16(cmd.fl) >= THROTTLE_DEADBAND ||
                         abs_i16(cmd.fr) >= THROTTLE_DEADBAND ||
@@ -230,9 +254,21 @@ void loop() {
     state = moving ? TST_DRIVING : TST_IDLE;
   }
 
-  // 3) Drive the motors (or coast if not armed).
+  // 3) Balance rear RPM for equal commands. Stop, turn, reversal, and disarm
+  // reset the controller immediately. Front wheels remain open-loop until
+  // they have encoders; rear corrections are not a front speed measurement.
+  const RearSpeedSync::Output rear = rearSpeedSync.update(
+      now, (int32_t)encRL.read(), (int32_t)encRR.read(), cmd.rl, cmd.rr, armed);
+  appliedCmd = armed ? ThrottleCmd{cmd.fl, cmd.fr, rear.left, rear.right}
+                     : ThrottleCmd{0, 0, 0, 0};
+  // Apply the input deadband before regulation, not to a regulator's small
+  // nonzero outputs; otherwise light-throttle corrections have a PWM step.
+  if (abs_i16(cmd.rl) < THROTTLE_DEADBAND) appliedCmd.rl = 0;
+  if (abs_i16(cmd.rr) < THROTTLE_DEADBAND) appliedCmd.rr = 0;
+  if (abs_i16(cmd.fl) < THROTTLE_DEADBAND) appliedCmd.fl = 0;
+  if (abs_i16(cmd.fr) < THROTTLE_DEADBAND) appliedCmd.fr = 0;
   if (armed) {
-    driveAll(cmd, /*armed=*/true);
+    driveAll(appliedCmd, /*armed=*/true, /*regulatedRear=*/true);
   } else {
     coastAll();
   }

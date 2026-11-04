@@ -16,11 +16,11 @@ Controls
   q         quit
 
 Caveats
-- Your OS has an initial ~500ms delay before a held key starts repeating.
-  hold_timeout defaults to 0.6s to keep first-press motion alive until the
-  repeats kick in. Set lower for tighter release feel once you're moving.
-- E-stop cannot be cleared from here. Restart the node AND power-cycle the
-  NUCLEO master to clear the firmware latch.
+- grace_timeout_s bridges the initial OS key-repeat delay. Once repeat is
+  detected, release_timeout_s controls how quickly release commands zero.
+- x latches e-stop; r requests reset with zero output and clears held keys.
+  A fresh movement key is required after reset. Firmware heartbeat e-stop
+  feedback also latches the local keyboard stop until r is pressed.
 """
 from __future__ import annotations
 
@@ -32,8 +32,9 @@ import tty
 
 import rclpy
 from rclpy.node import Node
+from rclpy.executors import ExternalShutdownException
 
-from carl_msgs.msg import CarlEstop, CarlThrottleCmd
+from carl_msgs.msg import CarlEstop, CarlHeartbeat, CarlThrottleCmd
 
 
 SPEED_LEVELS = {1: 0.25, 2: 0.50, 3: 0.75, 4: 1.00}
@@ -58,6 +59,7 @@ class KeyboardTeleopNode(Node):
         self._speed_level = 1
         self._mode = 'DRIVE'          # DRIVE or NEUTRAL
         self._estop = False
+        self._reset_pending = False
         # deadline (monotonic seconds) — key is "active" while now < deadline
         self._deadline = {'w': 0.0, 's': 0.0, 'a': 0.0, 'd': 0.0}
         # last press timestamp — used to detect auto-repeat
@@ -65,6 +67,8 @@ class KeyboardTeleopNode(Node):
 
         self._pub_throttle = self.create_publisher(CarlThrottleCmd, 'carl/throttle_cmd', 10)
         self._pub_estop = self.create_publisher(CarlEstop, 'carl/estop', 10)
+
+        self.create_subscription(CarlHeartbeat, 'carl/heartbeat', self._on_heartbeat, 1)
 
         rate = self.get_parameter('publish_rate_hz').value
         self.create_timer(1.0 / rate, self._publish)
@@ -110,14 +114,18 @@ class KeyboardTeleopNode(Node):
             self._mode = 'DRIVE'
         elif key == 'x':
             self._estop = True
-            for k in self._deadline:
-                self._deadline[k] = 0.0
+            self._reset_pending = False
+            self._release_keys()
+            self._publish()
             m = CarlEstop()
             m.reason = CarlEstop.REASON_OPERATOR
             self._pub_estop.publish(m)
-            self.get_logger().warn('E-STOP LATCHED')
+            self.get_logger().warning('E-STOP LATCHED')
         elif key == 'r':
-            self._estop = False
+            self._release_keys()
+            self._estop = True
+            self._publish()  # Zero before asking the master to clear its latch.
+            self._reset_pending = True
             m = CarlEstop()
             m.reason = CarlEstop.REASON_RESET
             self._pub_estop.publish(m)
@@ -127,6 +135,23 @@ class KeyboardTeleopNode(Node):
 
         self._print_state()
         return True
+
+    def _release_keys(self):
+        for key in self._deadline:
+            self._deadline[key] = self._last_press[key] = 0.0
+
+    def _on_heartbeat(self, msg):
+        if msg.flags & CarlHeartbeat.FLAG_ESTOP or msg.mode == CarlHeartbeat.MODE_ESTOP:
+            self._estop = True
+            self._release_keys()
+            self._publish()
+        elif self._reset_pending:
+            # An old ESTOP heartbeat may still be queued after pressing r.
+            # Resume readiness only when the master reports its latch cleared.
+            self._reset_pending = False
+            self._estop = False
+            self._release_keys()
+            self._print_state()
 
     def _active(self, key: str, now: float) -> bool:
         return now < self._deadline[key]
@@ -173,11 +198,14 @@ class KeyboardTeleopNode(Node):
         sys.stdout.flush()
 
     def shutdown(self):
-        zero = CarlThrottleCmd()
-        zero.header.stamp = self.get_clock().now().to_msg()
-        self._pub_throttle.publish(zero)
-        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._stdin_settings)
-        sys.stdout.write('\n')
+        try:
+            if self.context.ok():
+                zero = CarlThrottleCmd()
+                zero.header.stamp = self.get_clock().now().to_msg()
+                self._pub_throttle.publish(zero)
+        finally:
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._stdin_settings)
+            sys.stdout.write('\n')
 
 
 def _clamp(x: float, lo: float, hi: float) -> float:
@@ -192,12 +220,14 @@ def main():
             rclpy.spin_once(node, timeout_sec=0.02)
             if not node.poll_key():
                 break
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
-        node.shutdown()
-        node.destroy_node()
-        rclpy.shutdown()
+        try:
+            node.shutdown()
+        finally:
+            node.destroy_node()
+            rclpy.try_shutdown()
 
 
 if __name__ == '__main__':

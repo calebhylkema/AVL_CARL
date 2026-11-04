@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 import struct
+import time
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -21,9 +22,188 @@ MSG_HEARTBEAT = 0x010
 MSG_THROTTLE_CMD = 0x100
 MSG_THROTTLE_STATUS = 0x200
 MSG_ENCODER_FEEDBACK = 0x210
+MSG_STEERING_FEEDBACK = 0x221
 MSG_IMU_ACCEL = 0x230
 MSG_IMU_GYRO = 0x231
 MSG_IMU_TEMPERATURE = 0x232
+MSG_IMU_DIAGNOSTICS = 0x233
+MSG_BNO_ACCEL = 0x234
+MSG_BNO_GYRO = 0x235
+MSG_BNO_QUAT_XYZ = 0x236
+MSG_BNO_QUAT_W = 0x237
+MSG_BNO_DIAGNOSTICS = 0x238
+MSG_BNO_SPI_DIAGNOSTICS = 0x23A
+
+STEERING_SAMPLE_VALID = 0x01
+STEERING_ADC_RAIL_LOW = 0x02
+STEERING_ADC_RAIL_HIGH = 0x04
+STEERING_OUT_OF_RANGE = 0x08
+STEERING_LINK_STALE = 0x80
+
+
+@dataclass(frozen=True)
+class SteeringFeedback:
+    status: int
+    raw_adc: int
+    sequence: int
+
+
+def unpack_steering_feedback(payload: bytes) -> SteeringFeedback:
+    if len(payload) != 6 or payload[0] != 1:
+        raise ValueError('Expected six-byte steering feedback schema 1')
+    _, status, raw, sequence = struct.unpack('<BBHH', payload)
+    expected = (STEERING_ADC_RAIL_LOW if raw == 0 else
+                STEERING_ADC_RAIL_HIGH if raw == 4095 else STEERING_SAMPLE_VALID)
+    if raw > 4095 or status != expected:
+        raise ValueError('Invalid steering ADC count or flags')
+    return SteeringFeedback(status, raw, sequence)
+
+
+BNO_STAGE_NAMES = (
+    'power_wait', 'reset_low', 'boot_wait', 'identify', 'configure',
+    'stream_wait', 'ready', 'retry_wait',
+)
+BNO_ERROR_NAMES = (
+    'ok', 'boot_timeout', 'identify_timeout', 'configure_timeout',
+    'invalid_packet', 'unsupported_fragment', 'report_timeout', 'sensor_reset',
+)
+
+
+def unpack_bno_spi_diagnostics(payload: bytes) -> dict:
+    if len(payload) != 8 or payload[0] != 1:
+        raise ValueError('Expected eight-byte BNO SPI diagnostic schema 1')
+    result, header, lines = payload[1], payload[2:6], payload[6]
+    names = ('not_attempted', 'empty', 'packet', 'invalid_length')
+    observed = result != 0
+    length = int.from_bytes(header[:2], 'little') & 0x7fff
+    return {
+        'schema': 1,
+        'result': names[result] if result < len(names) else f'unknown_{result}',
+        'header_hex': header.hex(' ') if observed else None,
+        'declared_length': length if observed else None,
+        'continuation': bool(header[1] & 0x80) if observed else None,
+        'channel': header[2] if observed else None,
+        'sequence': header[3] if observed else None,
+        'int_asserted': bool(lines & 1) if observed else None,
+        'reset_high': bool(lines & 2) if observed else None,
+        'wake_high': bool(lines & 4) if observed else None,
+        'cs_high_before_read': bool(lines & 8) if observed else None,
+        'snapshot': 'last_receive_attempt',
+    }
+
+
+def unpack_bno_diagnostics(payload: bytes) -> dict:
+    if len(payload) != 8 or payload[0] != 1:
+        raise ValueError('Expected eight-byte BNO diagnostic schema 1')
+    _, stage, failed, error, detail, ready, count = struct.unpack('<BBBBBBH', payload)
+
+    def name(names, value):
+        return names[value] if value < len(names) else f'unknown_{value}'
+
+    return {
+        'sensor': 'BNO08x', 'interface': 'spi', 'schema': 1,
+        'stage': name(BNO_STAGE_NAMES, stage),
+        'failed_stage': name(BNO_STAGE_NAMES, failed),
+        'error': name(BNO_ERROR_NAMES, error),
+        'detail': f'0x{detail:02x}', 'ready': bool(ready), 'error_count': count,
+        'temperature_supported': False,
+    }
+
+
+@dataclass(frozen=True)
+class BnoSample:
+    sequence: int
+    accel: tuple
+    gyro: tuple
+    quaternion: tuple  # normalized x,y,z,w
+    orientation_accuracy: int
+    heading_accuracy_rad: float
+
+
+class BnoSampleAssembler:
+    """Bounded assembly of a fresh BNO snapshot; never use MPU ADC scaling.
+
+    Sensor reports are independently scheduled, combined by the STM32 only
+    when each is new and at most 50 ms old. A wire snapshot expires after
+    100 ms and cannot be paired across a dropped packet/sequence wrap.
+    """
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self._sequence = None
+        self._parts = {}
+        self._started = 0.0
+        self._completed = None
+
+    def add(self, msg_id: int, payload: bytes, now=None):
+        now = time.monotonic() if now is None else now
+        expected = 6 if msg_id == MSG_BNO_QUAT_W else 8
+        if msg_id not in (MSG_BNO_ACCEL, MSG_BNO_GYRO, MSG_BNO_QUAT_XYZ, MSG_BNO_QUAT_W):
+            raise ValueError('Unknown BNO snapshot part')
+        if len(payload) != expected:
+            raise ValueError('Incorrect BNO snapshot payload length')
+        sequence, status = payload[:2]
+        if (status & 3) != 3:
+            self.reset()
+            return None
+        if self._completed == sequence and now - self._started < 0.1:
+            return None
+        if self._sequence != sequence or now - self._started >= 0.1:
+            self._sequence = sequence
+            self._parts = {}
+            self._started = now
+        self._parts[msg_id] = payload
+        if len(self._parts) != 4:
+            return None
+        parts = self._parts
+        self._parts = {}
+        self._completed = sequence
+        accel = struct.unpack('<hhh', parts[MSG_BNO_ACCEL][2:])
+        gyro = struct.unpack('<hhh', parts[MSG_BNO_GYRO][2:])
+        xyz = struct.unpack('<hhh', parts[MSG_BNO_QUAT_XYZ][2:])
+        w, heading = struct.unpack('<hH', parts[MSG_BNO_QUAT_W][2:])
+        q = tuple(value / 16384.0 for value in (*xyz, w))
+        norm = math.sqrt(sum(value * value for value in q))
+        if not 0.9 <= norm <= 1.1:
+            return None  # corrupted/zero orientation must not become valid ROS data
+        return BnoSample(
+            sequence, tuple(value / 256.0 for value in accel),
+            tuple(value / 512.0 for value in gyro),
+            tuple(value / norm for value in q),
+            (parts[MSG_BNO_QUAT_XYZ][1] >> 4) & 3, heading / 4096.0,
+        )
+
+
+IMU_STAGE_NAMES = (
+    'power_wait', 'identify', 'reset', 'reset_wait', 'wake', 'wake_wait',
+    'configure', 'ready', 'retry_wait', 'sample', 'recover',
+)
+IMU_ERROR_NAMES = (
+    'ok', 'buffer_error', 'address_nack', 'data_nack', 'bus_error',
+    'timeout', 'short_read', 'wrong_identity', 'scl_held_low', 'sda_held_low',
+)
+
+
+def unpack_imu_diagnostics(payload: bytes) -> dict:
+    """Decode the STM32 health frame even when the sensor cannot initialize."""
+    if len(payload) != 8:
+        raise ValueError(f'IMU diagnostics payload must be 8 bytes, got {len(payload)}')
+    stage, failed, address, identity, error, register, count = struct.unpack(
+        '<BBBBBBH', payload
+    )
+    return {
+        'stage': IMU_STAGE_NAMES[stage] if stage < len(IMU_STAGE_NAMES) else f'unknown_{stage}',
+        'failed_stage': (
+            IMU_STAGE_NAMES[failed]
+            if failed < len(IMU_STAGE_NAMES) else f'unknown_{failed}'
+        ),
+        'i2c_address': f'0x{address:02x}',
+        'who_am_i': f'0x{identity:02x}',
+        'error': IMU_ERROR_NAMES[error] if error < len(IMU_ERROR_NAMES) else f'unknown_{error}',
+        'register': f'0x{register:02x}',
+        'error_count': count,
+    }
 
 # These status bits mirror firmware/lib/carl_protocol/imu_telemetry.h. The
 # bridge publishes only complete samples marked valid by the STM32.
@@ -92,6 +272,8 @@ def frame(msg_id: int, payload: bytes) -> bytes:
 
 def pack_throttle_cmd(fl: float, fr: float, rl: float, rr: float) -> bytes:
     """Wheel commands normalized [-1.0, 1.0] -> int16 per-mille."""
+    if not all(math.isfinite(x) for x in (fl, fr, rl, rr)):
+        raise ValueError('Throttle commands must be finite')
     def q(x: float) -> int:
         return max(-1000, min(1000, int(round(x * 1000))))
     return struct.pack('<hhhh', q(fl), q(fr), q(rl), q(rr))

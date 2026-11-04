@@ -5,7 +5,8 @@
 > [`can-bus.md`](can-bus.md) (protocol). **The firmware pin maps in `firmware/` must match
 > this file** — change both together.
 
-Phase 1 scope: **throttle + master only**. The steering Teensy is **unpowered**; the kart
+Phase 1 drive actuation uses **throttle + master**. Power the steering Teensy
+for absolute-encoder telemetry (its motor remains disabled); the kart
 turns by **differential drive** (left-side vs right-side wheel speed) handled entirely on the
 throttle node. ⚠️ All power and grounds are assumed already handled; this doc covers signal
 wiring. **Common ground across all 24 V / 5 V / 3.3 V domains is mandatory.**
@@ -19,7 +20,7 @@ wiring. **Common ground across all 24 V / 5 V / 3.3 V domains is mandatory.**
 | CAN TX | pin **22** (CAN1_TX) | **PD1** (CAN1_TX) |
 | CAN RX | pin **23** (CAN1_RX) | **PD0** (CAN1_RX) |
 | Teleop serial | — | ST-LINK **VCP** (USART3, PD8/PD9) over the USB cable |
-| MPU-6500 I2C | — | **PB9 SDA / PB8 SCL** |
+| BNO08x SPI | — | **PB5 MOSI / PB4 MISO / PB3 SCK**, CN7 Zio cluster |
 | Status LED | pin 13 (on-board) | on-board LED |
 
 ---
@@ -101,11 +102,19 @@ We tie **`R_EN` + `L_EN` of a module together to one Teensy GPIO** (HIGH = enabl
 |---------------|------------------------|------------------------|------------------------------|-------|-------|
 | **FL** front-left  | pin **2** | pin **3** | pin **10** | 5 V | GND |
 | **FR** front-right | pin **4** | pin **5** | pin **11** | 5 V | GND |
-| **RL** rear-left   | pin **6** | pin **7** | pin **12** | 5 V | GND |
-| **RR** rear-right  | pin **8** | pin **9** | pin **24** | 5 V | GND |
+| **RL** rear-left   | pin **8** | pin **9** | pin **24** | 5 V | GND |
+| **RR** rear-right  | pin **6** | pin **7** | pin **12** | 5 V | GND |
 
-Direction convention in firmware: **`RPWM` = forward**, **`LPWM` = reverse**, both 0 = coast.
+These rear assignments match the bring-up swaps in the current throttle firmware.
+Positive wheel commands mean vehicle-forward. The right motors are electrically
+reversed, so firmware uses `kMotorDir={+1,-1,+1,-1}`: vehicle-forward FR drives
+**LPWM pin 5**, vehicle-reverse FR drives **RPWM pin 4**, with both enables on
+**pin 11**. Both PWM inputs are zero for coast/zero output.
 Power side of each IBT_2: `B+`/`B-` to the 24 V traction rail, `M+`/`M-` to the motor.
+
+For a front-right-only failure in both directions, see
+[`joystick-troubleshooting.md`](joystick-troubleshooting.md). A firmware e-stop
+disables all four motor channels, not a single corner.
 
 > ⚠️ **Logic level:** BTS7960 inputs are 5 V parts. Teensy drives 3.3 V. Verify `VIH` on a
 > scope; if the inputs are marginal, level-shift `RPWM`/`LPWM`/`EN` to 5 V (see
@@ -130,10 +139,16 @@ open-collector **or** a push-pull encoder, so the output type does not need to b
 
 | Signal | Encoder wire | → Shifter `HV` | Shifter `LV` → | Teensy pin |
 |--------|--------------|----------------|----------------|------------|
-| Rear-Left  A  | white | **HV1** | **LV1** | **14** |
-| Rear-Left  B  | green | **HV2** | **LV2** | **15** |
-| Rear-Right A  | white | **HV3** | **LV3** | **16** |
-| Rear-Right B  | green | **HV4** | **LV4** | **17** |
+| Rear-Left  A  | white | **HV3** | **LV3** | **16** |
+| Rear-Left  B  | green | **HV4** | **LV4** | **17** |
+| Rear-Right A  | white | **HV1** | **LV1** | **14** |
+| Rear-Right B  | green | **HV2** | **LV2** | **15** |
+
+The encoder pairs above match the installed harness: rotating the physical
+rear-left wheel by hand changed the old firmware's rear-right count (16/17).
+The throttle firmware now assigns 16/17 to RL and 14/15 to RR. Leave the harness
+as-is with this firmware; swapping the wires as well would cross the mapping
+again. Both feedback regulation and CAN count labels use this physical mapping.
 
 Level-shifter power/reference (all required — the pull-ups don't work otherwise):
 
@@ -162,33 +177,97 @@ A single USB cable from the PC to the NUCLEO's ST-LINK port does **both**:
 
 No extra wiring. Find the port with `python firmware/test/teleop.py --list`.
 
-### 4a. MPU-6500 ↔ master NUCLEO-F767ZI
+### 4a. GY-BNO08X SPI ↔ master NUCLEO-F767ZI
 
-The master uses a dedicated Arduino `TwoWire(PB9, PB8)` instance at 100 kHz.
-PB9 is SDA and PB8 is SCL; the constructor order is significant.
+The current master uses the photographed purple **GY-BNO08X** breakout,
+not the former MPU-6500. Power OFF before rewiring. Disconnect the MPU and its
+former PB8/PB9 or PF0/PF1 wires. In SPI mode **AD0 is MOSI**, not an address
+strap: do NOT retain the old AD0-to-GND connection.
 
-| MPU-6500 module pin | NUCLEO-F767ZI | Notes |
-|---------------------|---------------|-------|
-| `VCC` | 3.3 V | Do not power the sensor logic from 5 V |
-| `GND` | GND | Must share ground with the master and companion system |
-| `SDA` | PB9 | I2C data, address `0x68` |
-| `SCL` | PB8 | I2C clock, 100 kHz |
-| `AD0` | GND | Selects I2C address `0x68` |
-| `NCS` | 3.3 V | Holds the device in I2C mode |
-| `FSYNC` | GND | Unused input; the MPU-6500 datasheet specifies GND |
-| `INT` | not connected | Firmware polls the sample registers at 100 Hz |
-| `EDA`, `ECL` | not connected | Auxiliary sensor bus is unused |
+Six signal wires form one compact run on the **CN7 Zio header's odd row,
+pins 9 through 19**. The seventh, **PS0/WAKE, uses PD12 / D29 / CN10 pin 21**,
+the PD_12 socket shown in the supplied right-side header picture. This replaces
+the former PB12 / D19 wake assignment. Power and ground also use the pictured
+Zio female headers; no Morpho connections are needed for the IMU.
+Use the header's D labels and pin-1 marker, not left/right guesses from photos.
 
-Most MPU-6500 breakout modules include SDA/SCL pull-ups. With power off, verify
-that each line has resistance in the roughly 2.2–10 kΩ range to 3.3 V. If the
-module has no pull-ups, add one 4.7 kΩ resistor from SDA to 3.3 V and one from
-SCL to 3.3 V. Do not add pull-ups to 5 V.
+| GY-BNO08X pin | NUCLEO connection | Function |
+|---|---|---|
+| `VCC-3V3` | CN8 pin 7 / 3V3 | 3.3 V only |
+| `GND` | CN7 pin 8 / GND | Common ground, next to the signal cluster |
+| `PS1` | 3.3 V (same rail as VCC) | SPI startup selection |
+| `PS0` | PD12 / D29 / CN10 pin 21 | HIGH during reset; active-LOW wake afterward |
+| `RST` | PA15 / D20 / CN7 pin 9 | Active-LOW sensor reset |
+| `INT` | PC7 / D21 / CN7 pin 11 | Active-LOW attention; required |
+| `AD0` | PB5 / D22 / CN7 pin 13 | MOSI: STM32 → IMU |
+| `SCL` | PB3 / D23 / CN7 pin 15 | SPI clock |
+| `CS` | PA4 / D24 / CN7 pin 17 | Active-LOW chip select |
+| `SDA` | PB4 / D25 / CN7 pin 19 | MISO: IMU → STM32 |
+| `BOOT` pad | Leave untouched | Normal firmware, not bootloader |
+
+No solder bridges need to be closed for this wiring: PS1 is explicitly powered
+HIGH and firmware controls PS0. The pictures show open PS0/PS1 solder pads and
+a crystal can; they do not resolve the chip's exact 080/085/086 suffix or prove
+the module is electrically good. Do not bridge a pad whose function is unknown.
+External I2C pull-ups are not required for these SPI signals. Keep wiring short
+and away from motor cables. A breadboard is suitable for the initial bench test.
+
+The firmware explicitly uses `SPIClass(PB5, PB4, PB3)`, which selects **SPI1,
+AF5** with the installed STM32 Arduino core. The board labels these shared
+pins as SPI_B/SPI3, but both alternate functions exist; no ALT1 is used here.
+Avoid the default PA7/D11 SPI route and its board Ethernet routing options.
+CAN PD0/PD1, companion USART3 PD8/PD9, and ST-LINK SWD PA13/PA14 are unchanged.
+PD12 is used as a GPIO output; its I2C4/USART3_RTS alternate functions are not
+enabled. The companion serial link does not use hardware flow control.
+PB3 is used for SPI, so SWO trace must not be enabled on that pin.
+
+SPI runs MSB-first, mode 3, requested clock 1 MHz (hardware divider may make it
+slower). PS0 stays HIGH while startup packets are drained. Firmware waits for
+the executable channel's Reset Complete message before requesting product ID
+or enabling reports; the first INT alone does not establish readiness. PS0
+then provides wake handshaking. Startup, identification, and configuration are
+scheduled states; there are no delay loops waiting for INT. The driver requests acceleration,
+calibrated gyro, and rotation-vector reports at 100 Hz. A snapshot is sent only
+after each report has updated and each is at most 50 ms old by STM32 receipt
+time; the three sensor reports are not guaranteed simultaneous. Loss of any
+report for 250 ms triggers sensor-only recovery after a one-second backoff.
+
+For a startup `invalid_packet`, inspect
+`ros2 topic echo /carl/imu/spi_diagnostics --once --full-length`.
+It includes the last raw four-byte SHTP receive header and GPIO levels sampled
+before that receive, retained across sensor reset attempts. `not_attempted`
+means no receive snapshot exists yet. An all-FF header is consistent with an
+undriven/high MISO line or wrong mode, but does not prove either; check wiring
+and power or capture a logic-analyzer trace. `empty` with an all-zero header
+is inconclusive. A nonempty length outside 4..512 or channel above 5 is rejected.
+This instrumentation does not change SPI clock/mode, reset timing, or retry
+behavior. It requires updated master firmware and bridge; older bridges ignore
+the additional wire ID.
+
+Inspect `ros2 topic echo /carl/imu/diagnostics --full-length`. Missing INT gives
+`boot_timeout`; an INT without Reset Complete also times out in `boot_wait`
+(`detail=0x01` when INT is asserted at timeout). Failure to identify gives
+`identify_timeout`; missing streaming data gives `report_timeout`.
+Errors retain a saturating count across recovery,
+cleared only on STM32 restart. Only this sensor is reset, never CAN or STM32.
+The BNO does not provide the old MPU die-temperature stream: a temperature
+panel with no messages is expected, not proof of an IMU failure.
+
+References: [ST UM1974, Table 19](https://www.st.com/resource/en/user_manual/dm00244518-stm32-nucleo-144-boards-mb1137-stmicroelectronics.pdf),
+[CEVA BNO08x, section 1.2.4](https://www.ceva-ip.com/wp-content/uploads/BNO080_085-Datasheet.pdf),
+[CEVA SH-2 startup handshake (`sh2_open`)](https://github.com/ceva-dsp/sh2/blob/master/sh2.c),
+[SH-2 report definitions](https://www.ceva-ip.com/wp-content/uploads/SH-2-Reference-Manual.pdf).
 
 ---
 
 ## 5. Steering node (Phase 1: parked)
 
-Unpowered. Reserved CL57T pins for when steering comes online (verify opto logic levels first):
+The CL57T stays disabled. Power the steering Teensy and CAN transceiver for
+encoder feedback. Pin 14/A0 receives the analog encoder **through a 10k/10k
+voltage divider**, never directly from a 0–5 V sensor. See
+[absolute encoder wiring and verification](steering-encoder.md).
+
+Reserved CL57T pins for when steering actuation comes online (verify opto logic levels first):
 Teensy `STEP` = pin 3, `DIR` = pin 4, `ENA` = pin 5; CAN on pins 22/23 like the throttle node.
 The safe-idle firmware keeps the CL57T disabled and never steps.
 

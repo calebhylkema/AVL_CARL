@@ -13,6 +13,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   msg/CarlThrottleCmd.msg
   msg/CarlThrottleStatus.msg
   msg/CarlEncoderFeedback.msg
+  msg/CarlSteeringAngle.msg
   msg/CarlHeartbeat.msg
   msg/CarlEstop.msg
   DEPENDENCIES std_msgs

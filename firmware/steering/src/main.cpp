@@ -1,10 +1,10 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // AVL_CARL — STEERING node                       Board: Teensy 4.1 (ID 0x03)
 //
-// PHASE 1 STATUS: NOT USED. The kart turns by DIFFERENTIAL drive (left/right
+// PHASE 1 ACTUATION STATUS: NOT USED. The kart turns by DIFFERENTIAL drive (left/right
 // wheel speed split handled on the throttle node), so this node does not steer
-// yet. The physical board is currently UNPOWERED; its CAN transceiver is left
-// with the 120 Ω termination enabled as a bus end.
+// yet. Power this board and its CAN transceiver to publish encoder feedback;
+// keep its 120 Ω termination enabled as a bus end.
 //
 // This firmware is intentionally a SAFE-IDLE stub: if the board ever gets
 // powered, it keeps the CL57T DISABLED, never emits a step pulse, listens to the
@@ -22,6 +22,7 @@
 #include "carl_protocol.h"
 #include "heartbeat.h"
 #include "messages.h"
+#include "steering_telemetry.h"
 
 using namespace carl;
 
@@ -32,11 +33,16 @@ static const uint8_t PIN_STEP = 3;
 static const uint8_t PIN_DIR = 4;
 static const uint8_t PIN_ENA = 5;  // held in the DISABLED sense while idle
 static const uint8_t PIN_LED = LED_BUILTIN;
+// P3022 analog OUT -> 10k -> pin 14/A0 -> 10k -> GND (gain = 2).
+// NEVER connect 0..5 V OUT directly to a Teensy 4.1 input. See wiring docs.
+static const uint8_t PIN_ABSOLUTE_ENCODER = 14;
 
 FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> can1;
 Watchdog hbWatch(HEARTBEAT_TIMEOUT_MS);
 
 uint32_t lastStatusMs = 0;
+uint32_t lastSteeringFeedbackMs = 0;
+uint16_t steeringSequence = 0;
 uint32_t lastBlinkMs = 0;
 
 // Keep the stepper electrically idle: no step pulses, driver disabled.
@@ -62,6 +68,17 @@ static void sendStatus() {
   canSend(CANID_STEERING_STATUS, buf, 2);
 }
 
+static void sendSteeringFeedback() {
+  // A single averaged ADC read per 20 ms tick; no sensor handshake or waits.
+  const uint16_t raw = (uint16_t)analogRead(PIN_ABSOLUTE_ENCODER);
+  const uint8_t status = raw == 0 ? SF_ADC_RAIL_LOW
+      : raw >= STEERING_ADC_MAX ? SF_ADC_RAIL_HIGH : SF_SAMPLE_VALID;
+  const SteeringFeedback feedback = {status, raw, steeringSequence++};
+  uint8_t payload[8];
+  const uint8_t len = pack_steering_feedback(payload, feedback);
+  canSend(CANID_STEERING_FB, payload, len);
+}
+
 void setup() {
   Serial.begin(115200);
   pinMode(PIN_LED, OUTPUT);
@@ -69,6 +86,9 @@ void setup() {
   pinMode(PIN_DIR, OUTPUT);
   pinMode(PIN_ENA, OUTPUT);
   holdDisabled();
+  pinMode(PIN_ABSOLUTE_ENCODER, INPUT);
+  analogReadResolution(12);
+  analogReadAveraging(16);
 
   can1.begin();
   can1.setBaudRate(CAN_BITRATE);
@@ -94,6 +114,11 @@ void loop() {
   if (now - lastStatusMs >= STATUS_PERIOD_MS) {
     lastStatusMs = now;
     sendStatus();
+  }
+
+  if (now - lastSteeringFeedbackMs >= STEERING_FB_PERIOD_MS) {
+    lastSteeringFeedbackMs = now;
+    sendSteeringFeedback();
   }
 
   // Slow heartbeat-style blink to show the node is alive but idle.

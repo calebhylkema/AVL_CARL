@@ -161,7 +161,7 @@ pio test -e native               # run protocol unit tests on the PC (no hardwar
 | throttle | Teensy 4.1 | `throttle` · `teensy` |
 | steering | Teensy 4.1 | `steering` · `teensy` |
 
-### Autonomy (ROS 2, on the Jetson)
+### ROS 2 companion (laptop or Jetson)
 
 ```bash
 cd ros2_ws
@@ -171,7 +171,7 @@ ros2 run carl_bridge bridge_node
 ```
 
 See [`ros2_ws/README.md`](ros2_ws/README.md). Teleoperation and vehicle-level control run
-as ROS 2 nodes on the Jetson and reach the vehicle over the serial↔CAN bridge.
+as ROS 2 nodes on the companion and reach the vehicle over the serial↔CAN bridge.
 
 ---
 
@@ -184,6 +184,7 @@ as ROS 2 nodes on the Jetson and reach the vehicle over the serial↔CAN bridge.
 | [`docs/can-bus.md`](docs/can-bus.md) | CAN bitrate, node IDs, message/ID allocation map |
 | [`docs/wiring.md`](docs/wiring.md) | Pin-level wiring per node |
 | [`docs/roadmap.md`](docs/roadmap.md) | Phased plan, milestones, open questions |
+| [`docs/field-test-2026-10-25.md`](docs/field-test-2026-10-25.md) | Outdoor test 1, phone connection recovery, velocity assessment, validation and rollout |
 
 ---
 

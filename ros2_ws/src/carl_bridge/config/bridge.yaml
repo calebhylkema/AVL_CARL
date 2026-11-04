@@ -7,3 +7,12 @@ carl_bridge:
     udp.remote_port: 5000
     udp.local_port: 5001
     poll_rate_hz: 200.0
+    # P3022 analog OUT through a 10k/10k divider into steering Teensy 14/A0.
+    steering.adc_reference_voltage: 3.3
+    steering.divider_gain: 2.0
+    steering.sensor_full_scale_voltage: 5.0
+    steering.zero_offset_rad: 0.0
+    steering.direction: 1.0
+    steering.ratio: 1.0  # sensor radians per steering radian
+    steering.calibrated: false
+    steering.timeout_sec: 0.25

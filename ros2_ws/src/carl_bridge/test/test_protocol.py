@@ -32,6 +32,49 @@ def imu_temperature_payload(sequence, status, raw_temperature):
 class ImuProtocolTests(unittest.TestCase):
     """Check IMU decoding, pairing, framing, and physical-unit conversion."""
 
+    def test_nonfinite_throttle_is_rejected_in_every_wheel_position(self):
+        for index in range(4):
+            for value in (math.nan, math.inf, -math.inf):
+                wheels = [0.4] * 4
+                wheels[index] = value
+                with self.assertRaises(ValueError):
+                    protocol.pack_throttle_cmd(*wheels)
+
+    def test_joystick_center_band_byte_order_and_limits(self):
+        self.assertEqual(struct.unpack('<hhhh', protocol.pack_throttle_cmd(*([0.4] * 4))),
+                         (400, 400, 400, 400))
+        self.assertEqual(struct.unpack('<hhhh', protocol.pack_throttle_cmd(*([-0.4] * 4))),
+                         (-400, -400, -400, -400))
+
+    def test_diagnostics_firmware_layout_and_failure_description(self):
+        payload = bytes((8, 1, 0x68, 0x70, 2, 0x75, 0x34, 0x12))
+        diagnostic = protocol.unpack_imu_diagnostics(payload)
+        self.assertEqual(diagnostic, {
+            'stage': 'retry_wait', 'failed_stage': 'identify',
+            'i2c_address': '0x68', 'who_am_i': '0x70',
+            'error': 'address_nack', 'register': '0x75', 'error_count': 0x1234,
+        })
+        frames = list(protocol.Parser().feed(
+            protocol.frame(protocol.MSG_IMU_DIAGNOSTICS, payload)))
+        self.assertEqual(frames, [(0x233, payload)])
+
+    def test_diagnostics_rejects_bad_lengths_and_handles_unknown_codes(self):
+        for length in (0, 7, 9):
+            with self.assertRaises(ValueError):
+                protocol.unpack_imu_diagnostics(bytes(length))
+        diagnostic = protocol.unpack_imu_diagnostics(bytes([255] * 8))
+        self.assertEqual(diagnostic['stage'], 'unknown_255')
+        self.assertEqual(diagnostic['error'], 'unknown_255')
+        self.assertEqual(diagnostic['error_count'], 65535)
+
+    def test_diagnostics_names_bus_recovery_and_held_low_lines(self):
+        for code, name in ((8, 'scl_held_low'), (9, 'sda_held_low')):
+            diagnostic = protocol.unpack_imu_diagnostics(
+                struct.pack('<BBBBBBH', 8, 10, 0x68, 0x70, code, 0x3b, 2))
+            self.assertEqual(diagnostic['failed_stage'], 'recover')
+            self.assertEqual(diagnostic['error'], name)
+            self.assertEqual(diagnostic['error_count'], 2)
+
     def test_unpack_imu_axis_signed_little_endian_values(self):
         payload = bytes((0xA5, 0x03, 0x34, 0x12, 0xFE, 0xFF, 0x00, 0x80))
 

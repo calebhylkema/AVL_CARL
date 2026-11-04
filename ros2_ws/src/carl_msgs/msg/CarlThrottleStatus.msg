@@ -8,6 +8,7 @@ uint8 STATE_ESTOP=4
 
 uint8 FAULT_HEARTBEAT_LOST=1
 uint8 FAULT_ESTOP=2
+uint8 FAULT_COMMAND_LOST=4
 
 uint8 state
 uint8 faults

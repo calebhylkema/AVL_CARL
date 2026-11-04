@@ -1,13 +1,12 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // AVL_CARL — MASTER / VCU node                  Board: NUCLEO-F767ZI (ID 0x01)
 //
-// The master is a DUMB PROXY between a companion computer (running ROS2) and
-// the CAN bus, plus a safety supervisor.
+// The master proxies a companion computer (running ROS2) to the CAN bus,
+// supervises safety, and forwards operator throttle commands.
 //
 //   Companion (framed binary over serial) <──> Master <──> CAN bus <──> edge nodes
 //
-// It does not do vehicle-level logic — no ASCII parsing, no differential mix,
-// no wheel arbitration. That all lives in ROS2 now. What it DOES do:
+// ROS2 retains operator mixing/arbitration. The master handles:
 //
 //   • Ingress: unwrap wire frames from the companion → drop matching CAN frame.
 //   • Egress:  wrap incoming CAN frames from edge nodes → send to the companion.
@@ -18,8 +17,6 @@
 //   • TELEOP WATCHDOG: if the companion stops sending throttle commands for
 //     TELEOP_TIMEOUT_MS, force the outbound throttle command to zero. No-brake
 //     design => a stalled ROS2 stack must not leave the kart driving.
-//   • Read the local MPU-6500 and send wire-only motion/temperature telemetry
-//     to ROS2. IMU telemetry is never forwarded to CAN or used for control.
 //
 // CAN: STM32_CAN (bxCAN) on CAN1 remapped to PD0 = CAN1_RX, PD1 = CAN1_TX.
 //      Wire those to the TJA1051 transceiver. The master is the MIDDLE of the
@@ -30,29 +27,16 @@
 // ─────────────────────────────────────────────────────────────────────────────
 #include <Arduino.h>
 #include <STM32_CAN.h>
-#include <Wire.h>
 
 #include "carl_protocol.h"
 #include "heartbeat.h"
-#include "imu_telemetry.h"
 #include "messages.h"
-#include "mpu6500.h"
 #include "wire.h"
 
 using namespace carl;
 
 // ── CAN ─────────────────────────────────────────────────────────────────────
 STM32_CAN Can1(CAN1, ALT_2);  // ALT_2 = PD0 (RX) / PD1 (TX)
-
-// ── IMU hardware ────────────────────────────────────────────────────────────
-// The STM32 Arduino TwoWire constructor takes SDA first and SCL second. These
-// pins match the hardware configuration proven by the CubeMX bench firmware.
-TwoWire ImuWire(PB9, PB8);  // PB9 = SDA, PB8 = SCL
-
-// INT is intentionally not connected on CARL. The MPU-6500 is configured for
-// 100 Hz output and sampled from loop() at the same rate instead.
-static const uint32_t IMU_SAMPLE_PERIOD_MS = 10;
-Mpu6500 imu;
 
 // ── State (kept small on purpose) ───────────────────────────────────────────
 ThrottleCmd currentCmd = {0, 0, 0, 0};  // last cmd from companion
@@ -63,18 +47,6 @@ Watchdog    teleopWatch(TELEOP_TIMEOUT_MS);
 WireParser  parser;
 
 uint32_t lastCmdMs = 0;
-
-// ── IMU state ───────────────────────────────────────────────────────────────
-// These fields retain IMU health, the newest raw reading, and the sequence used
-// by the two wire telemetry frames. They never alter a CARL command or safety
-// decision.
-static bool imuInitialized = false;
-static bool imuSampleValid = false;
-static bool imuTelemetryPending = false;
-static uint8_t imuSequence = 0;
-static uint32_t lastImuSampleMs = 0;
-static uint32_t imuReadErrorCount = 0;
-static Mpu6500RawSample latestImuSample = {0, 0, 0, 0, 0, 0, 0};
 
 // ── CAN send ────────────────────────────────────────────────────────────────
 static void canSend(uint16_t id, const uint8_t* buf, uint8_t len) {
@@ -92,76 +64,11 @@ static void wireSend(uint16_t msg_id, const uint8_t* payload, uint8_t len) {
   Serial.write(out, n);
 }
 
-// ── Local IMU acquisition and wire telemetry ───────────────────────────────
-// Read at most one sample per 10 ms. Unsigned subtraction keeps the schedule
-// correct across millis() rollover.
-static void pollImu(uint32_t now) {
-  if (!imuInitialized) return;
-  if (now - lastImuSampleMs < IMU_SAMPLE_PERIOD_MS) return;
-  lastImuSampleMs = now;
-
-  Mpu6500RawSample sample;
-  if (imu.readSample(&sample)) {
-    // Expose a new sample only after the complete 14-byte transfer succeeds.
-    // The next function will send both wire halves with one sequence number.
-    latestImuSample = sample;
-    imuSampleValid = true;
-    imuTelemetryPending = true;
-  } else {
-    // Keep the previous sample in memory for diagnostics, but never retransmit
-    // it as new data after a failed read.
-    imuSampleValid = false;
-    imuTelemetryPending = false;
-    ++imuReadErrorCount;
-  }
-}
-
-// Send acceleration, gyroscope, and die temperature back-to-back over the
-// existing framed binary link. These messages are local master telemetry and
-// are deliberately not sent over CAN.
-static void sendImuTelemetry() {
-  if (!imuTelemetryPending || !imuSampleValid) return;
-
-  const uint8_t status = IMU_STATUS_INITIALIZED | IMU_STATUS_SAMPLE_VALID;
-  const ImuAxisTelemetry accel = {
-      imuSequence,
-      status,
-      latestImuSample.accel_x,
-      latestImuSample.accel_y,
-      latestImuSample.accel_z,
-  };
-  const ImuAxisTelemetry gyro = {
-      imuSequence,
-      status,
-      latestImuSample.gyro_x,
-      latestImuSample.gyro_y,
-      latestImuSample.gyro_z,
-  };
-  const ImuTemperatureTelemetry temperature = {
-      imuSequence,
-      status,
-      latestImuSample.temperature,
-  };
-
-  uint8_t payload[8];
-  uint8_t len = pack_imu_axis(payload, accel);
-  wireSend(WIREID_IMU_ACCEL, payload, len);
-
-  len = pack_imu_axis(payload, gyro);
-  wireSend(WIREID_IMU_GYRO, payload, len);
-
-  len = pack_imu_temperature(payload, temperature);
-  wireSend(WIREID_IMU_TEMPERATURE, payload, len);
-
-  // Increment only after all three frames have been handed to the serial driver.
-  // Unsigned rollover from 255 to 0 is intentional and understood by the bridge.
-  imuTelemetryPending = false;
-  ++imuSequence;
-}
-
 // ── Forward the current throttle command onto CAN (0x100) ───────────────────
-static void sendThrottleCmd() {
-  ThrottleCmd c = estopLatched ? ThrottleCmd{0, 0, 0, 0} : currentCmd;
+static void sendThrottleCmd(bool teleopOk) {
+  // Forward operator intent unchanged only while both safety gates allow it.
+  const ThrottleCmd c = (teleopOk && !estopLatched)
+      ? currentCmd : ThrottleCmd{0, 0, 0, 0};
   uint8_t buf[8];
   uint8_t len = pack_throttle_cmd(buf, c);
   canSend(CANID_THROTTLE_CMD, buf, len);
@@ -203,13 +110,13 @@ static void handleWireFrame(uint16_t msg_id, const uint8_t* payload, uint8_t len
         // edge nodes clear their own latch via the heartbeat handler. Do NOT
         // forward the clear onto CAN — the heartbeat carries the semantics.
         estopLatched = false;
+        currentCmd = {0, 0, 0, 0}; // Reset never resurrects a retained drive command.
       } else {
         estopLatched = true;
         currentCmd = {0, 0, 0, 0};
         // Fire the high-priority CAN frame immediately (don't wait for next tick).
         canSend(CANID_ESTOP, payload, len);
       }
-      teleopWatch.feed(millis());
       break;
     default:
       break;  // ignore unknown IDs; forward-compat with future ROS2 msgs
@@ -232,11 +139,13 @@ static void pollCan() {
       case CANID_THROTTLE_STATUS:
       case CANID_ENCODER_FB:
       case CANID_STEERING_STATUS:
+      case CANID_STEERING_FB:
         wireSend(rx.id, rx.buf, rx.len);
         break;
       case CANID_ESTOP:
         // Someone else asserted e-stop on the bus.
         estopLatched = true;
+        currentCmd = {0, 0, 0, 0};
         wireSend(rx.id, rx.buf, rx.len);
         break;
       default:
@@ -266,25 +175,12 @@ void setup() {
   Can1.begin();
   Can1.setBaudRate(CAN_BITRATE);
   enableCanAutoBusOffRecovery();
-
-  // Use the conservative 100 kHz bus rate validated by the bench firmware.
-  // IMU initialization failure is isolated: CARL's CAN, serial, heartbeat,
-  // e-stop, watchdog, and throttle behavior continue exactly as before.
-  ImuWire.begin();
-  ImuWire.setClock(100000);
-
-  imuInitialized = imu.begin(ImuWire);
-  if (imuInitialized) {
-    // Start the first timed read one full sample period after initialization.
-    lastImuSampleMs = millis();
-  }
 }
 
 void loop() {
-  const uint32_t now = millis();
-
   pollSerial();
   pollCan();
+  const uint32_t now = millis(); // Must be at least as new as any watchdog feed.
 
   // Teleop watchdog: stale companion → force zero commands (kart stops).
   const bool teleopOk = !teleopWatch.expired(now);
@@ -294,16 +190,10 @@ void loop() {
 
   if (now - lastCmdMs >= THROTTLE_CMD_PERIOD_MS) {
     lastCmdMs = now;
-    sendThrottleCmd();
+    sendThrottleCmd(teleopOk);
   }
 
   if (hb.due(now)) {
     sendHeartbeat(now, teleopOk);
   }
-
-  // Keep all original command and safety work ahead of sensor acquisition and
-  // telemetry. An IMU transaction can therefore never delay work that was due
-  // at the start of this loop pass.
-  pollImu(now);
-  sendImuTelemetry();
 }

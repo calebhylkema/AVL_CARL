@@ -31,7 +31,8 @@ enum CanId : uint16_t {
   CANID_STEERING_CMD     = 0x110,  // master -> steering, 20 ms (Phase 1: unused)
   CANID_THROTTLE_STATUS  = 0x200,  // throttle -> master, 50 ms
   CANID_ENCODER_FB       = 0x210,  // throttle -> master, 20 ms
-  CANID_STEERING_STATUS  = 0x220,  // steering -> master, 50 ms (Phase 1: unused)
+  CANID_STEERING_STATUS  = 0x220,  // steering -> master, 50 ms (safe-idle status)
+  CANID_STEERING_FB      = 0x221,  // steering -> master, 20 ms (absolute ADC)
 };
 
 // ── Timing (milliseconds) ───────────────────────────────────────────────────
@@ -39,10 +40,14 @@ static const uint32_t HEARTBEAT_PERIOD_MS    = 50;
 static const uint32_t THROTTLE_CMD_PERIOD_MS = 20;
 static const uint32_t STATUS_PERIOD_MS       = 50;
 static const uint32_t ENCODER_FB_PERIOD_MS   = 20;
+static const uint32_t STEERING_FB_PERIOD_MS  = 20;
 
 // Edge nodes enter the safe state if the master heartbeat is missed for this
 // long (3 missed beats at 50 ms). No-brake design => safe state = motors 0.
 static const uint32_t HEARTBEAT_TIMEOUT_MS = 150;
+// A healthy heartbeat must not keep an old motor command alive if command
+// frames stop arriving (nominally every 20 ms).
+static const uint32_t THROTTLE_COMMAND_TIMEOUT_MS = 150;
 
 // Master zeroes drive commands if the teleop link (PC over USB serial) goes
 // quiet for this long — so a crashed/unplugged teleop script stops the kart.
@@ -75,7 +80,7 @@ enum ThrottleState : uint8_t {
   TST_INIT      = 0,  // booting, no heartbeat seen yet
   TST_IDLE      = 1,  // heartbeat OK, commanding zero
   TST_DRIVING   = 2,  // applying a nonzero command
-  TST_SAFE_STOP = 3,  // heartbeat lost -> motors 0, enables off
+  TST_SAFE_STOP = 3,  // heartbeat/command lost -> motors 0, enables off
   TST_ESTOP     = 4,  // e-stop latched -> motors 0, enables off
 };
 
@@ -84,6 +89,7 @@ enum ThrottleFault : uint8_t {
   TF_NONE           = 0x00,
   TF_HEARTBEAT_LOST = 0x01,
   TF_ESTOP          = 0x02,
+  TF_COMMAND_LOST   = 0x04,
 };
 
 // ── E-stop reason codes (byte 0 of CANID_ESTOP) ─────────────────────────────
