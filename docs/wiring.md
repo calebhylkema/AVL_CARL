@@ -20,7 +20,7 @@ wiring. **Common ground across all 24 V / 5 V / 3.3 V domains is mandatory.**
 | CAN TX | pin **22** (CAN1_TX) | **PD1** (CAN1_TX) |
 | CAN RX | pin **23** (CAN1_RX) | **PD0** (CAN1_RX) |
 | Teleop serial | — | ST-LINK **VCP** (USART3, PD8/PD9) over the USB cable |
-| BNO08x SPI | — | **PB5 MOSI / PB4 MISO / PB3 SCK**, CN7 Zio cluster |
+| MPU-6500/9250 SPI | — | **PE6 MOSI / PE5 MISO / PE2 SCK**, SPI4, CN9 Zio cluster |
 | Status LED | pin 13 (on-board) | on-board LED |
 
 ---
@@ -177,32 +177,36 @@ A single USB cable from the PC to the NUCLEO's ST-LINK port does **both**:
 
 No extra wiring. Find the port with `python firmware/test/teleop.py --list`.
 
-### 4a. GY-BNO08X SPI ↔ master NUCLEO-F767ZI
+### 4a. GY-BNO08X SPI ↔ master NUCLEO-F767ZI (historical)
+
+**Current `master` firmware uses the replacement MPU module in §4b.** The
+following BNO pinout is retained for reference and is incompatible with the
+MPU configuration; the SDA/AD0 signal roles differ.
 
 The current master uses the photographed purple **GY-BNO08X** breakout,
 not the former MPU-6500. Power OFF before rewiring. Disconnect the MPU and its
 former PB8/PB9 or PF0/PF1 wires. In SPI mode **AD0 is MOSI**, not an address
 strap: do NOT retain the old AD0-to-GND connection.
 
-Six signal wires form one compact run on the **CN7 Zio header's odd row,
-pins 9 through 19**. The seventh, **PS0/WAKE, uses PD12 / D29 / CN10 pin 21**,
-the PD_12 socket shown in the supplied right-side header picture. This replaces
-the former PB12 / D19 wake assignment. Power and ground also use the pictured
-Zio female headers; no Morpho connections are needed for the IMU.
-Use the header's D labels and pin-1 marker, not left/right guesses from photos.
+The reinstated master uses **SPI4 on CN9**, replacing the previous CN7
+PB5/PB4/PB3 SPI1 assignment and PD12 wake connection. All seven signal wires
+and ground occupy consecutive sockets along **CN9's even row, pins 12–26**.
+Power comes from CN8. Only CN8/CN9 are required; **CN11/CN12 are not used** and
+no additional headers need soldering. Use the header's D labels and pin-1
+marker, not left/right guesses from photos.
 
 | GY-BNO08X pin | NUCLEO connection | Function |
 |---|---|---|
 | `VCC-3V3` | CN8 pin 7 / 3V3 | 3.3 V only |
-| `GND` | CN7 pin 8 / GND | Common ground, next to the signal cluster |
+| `GND` | CN9 pin 12 / GND | Common ground, beside the signal cluster |
+| `SCL` | PE2 / D56 / CN9 pin 14 | SPI4 clock |
+| `CS` | PE4 / D57 / CN9 pin 16 | Active-LOW chip select, software GPIO |
+| `SDA` | PE5 / D58 / CN9 pin 18 | MISO: IMU → STM32 |
+| `AD0` | PE6 / D59 / CN9 pin 20 | MOSI: STM32 → IMU |
+| `RST` | PE3 / D60 / CN9 pin 22 | Active-LOW sensor reset |
+| `INT` | PF8 / D61 / CN9 pin 24 | Active-LOW attention; required |
+| `PS0` | PF7 / D62 / CN9 pin 26 | HIGH during reset/startup; active-LOW wake afterward |
 | `PS1` | 3.3 V (same rail as VCC) | SPI startup selection |
-| `PS0` | PD12 / D29 / CN10 pin 21 | HIGH during reset; active-LOW wake afterward |
-| `RST` | PA15 / D20 / CN7 pin 9 | Active-LOW sensor reset |
-| `INT` | PC7 / D21 / CN7 pin 11 | Active-LOW attention; required |
-| `AD0` | PB5 / D22 / CN7 pin 13 | MOSI: STM32 → IMU |
-| `SCL` | PB3 / D23 / CN7 pin 15 | SPI clock |
-| `CS` | PA4 / D24 / CN7 pin 17 | Active-LOW chip select |
-| `SDA` | PB4 / D25 / CN7 pin 19 | MISO: IMU → STM32 |
 | `BOOT` pad | Leave untouched | Normal firmware, not bootloader |
 
 No solder bridges need to be closed for this wiring: PS1 is explicitly powered
@@ -212,14 +216,12 @@ the module is electrically good. Do not bridge a pad whose function is unknown.
 External I2C pull-ups are not required for these SPI signals. Keep wiring short
 and away from motor cables. A breadboard is suitable for the initial bench test.
 
-The firmware explicitly uses `SPIClass(PB5, PB4, PB3)`, which selects **SPI1,
-AF5** with the installed STM32 Arduino core. The board labels these shared
-pins as SPI_B/SPI3, but both alternate functions exist; no ALT1 is used here.
-Avoid the default PA7/D11 SPI route and its board Ethernet routing options.
+The firmware explicitly uses `SPIClass(PE6, PE5, PE2)`, which selects
+**SPI4, AF5** with the installed STM32 Arduino core. The board's SAI labels on
+these sockets do not prevent their use for SPI/GPIO. PE2 is also exposed on
+CN10 pin 25 / D31: leave that duplicate socket free. PF7/PF8 are GPIOs here,
+not SPI5 or UART7 signals. No solder-bridge routing changes are required.
 CAN PD0/PD1, companion USART3 PD8/PD9, and ST-LINK SWD PA13/PA14 are unchanged.
-PD12 is used as a GPIO output; its I2C4/USART3_RTS alternate functions are not
-enabled. The companion serial link does not use hardware flow control.
-PB3 is used for SPI, so SWO trace must not be enabled on that pin.
 
 SPI runs MSB-first, mode 3, requested clock 1 MHz (hardware divider may make it
 slower). PS0 stays HIGH while startup packets are drained. Firmware waits for
@@ -254,6 +256,7 @@ The BNO does not provide the old MPU die-temperature stream: a temperature
 panel with no messages is expected, not proof of an IMU failure.
 
 References: [ST UM1974, Table 19](https://www.st.com/resource/en/user_manual/dm00244518-stm32-nucleo-144-boards-mb1137-stmicroelectronics.pdf),
+[STM32F767 alternate functions](https://www.st.com/resource/en/datasheet/stm32f767zi.pdf),
 [CEVA BNO08x, section 1.2.4](https://www.ceva-ip.com/wp-content/uploads/BNO080_085-Datasheet.pdf),
 [CEVA SH-2 startup handshake (`sh2_open`)](https://github.com/ceva-dsp/sh2/blob/master/sh2.c),
 [SH-2 report definitions](https://www.ceva-ip.com/wp-content/uploads/SH-2-Reference-Manual.pdf).
@@ -282,3 +285,29 @@ The safe-idle firmware keeps the CL57T disabled and never steps.
 4. Open `teleop.py`; verify `TLM` telemetry streams and `link=1`.
 5. With wheels **off the ground**, test level 1 + `w`/`s`/`a`/`d`, then `x`. Keep the hardware
    kill switch in hand.
+
+### 4b. Installed GY-6500/GY-9250 module — master SPI
+
+Use the standard firmware target **`master`** for this module. Power off before swapping modules; connect one IMU
+at a time. The physical replacement returned WHO_AM_I **0x71** (MPU-9250).
+
+| Replacement pin | NUCLEO connection | Function |
+|---|---|---|
+| `VCC` | CN8 pin 7 / 3V3 | 3.3 V power |
+| `GND` | CN9 pin 12 / GND | Common ground |
+| `SCL/SCLK` | PE2 / D56 / CN9 pin 14 | SPI4 clock |
+| `NCS` | PE4 / D57 / CN9 pin 16 | Software chip select |
+| `AD0/SDO` | PE5 / D58 / CN9 pin 18 | MISO: module → STM32 |
+| `SDA/SDI` | PE6 / D59 / CN9 pin 20 | MOSI: STM32 → module |
+| `INT` | PF8 / D61 / CN9 pin 24 | May remain connected; test polls INT_STATUS instead |
+| `FSYNC` | CN8 pin 11 / GND | Ground when unused |
+| `EDA`, `ECL` | Disconnected | Auxiliary external-sensor bus |
+
+Disconnect the former BNO RST (PE3 / CN9-22), PS0/WAKE (PF7 / CN9-26),
+and PS1 supply wire. The MPU has no matching reset/wake connections.
+**The SDA/AD0 roles differ from the BNO:** move former BNO SDA to MPU AD0/SDO,
+and former BNO AD0 to MPU SDA/SDI. Keep the STM32 ends in their existing sockets.
+The MPU provides raw accelerometer/gyro/temperature telemetry. The master also
+uses stationary-calibrated gyro data for bounded planar relative heading hold;
+it does not publish BNO quaternions. See
+[calibration and mounting limits](../firmware/README.md#mpu-relative-heading-hold).

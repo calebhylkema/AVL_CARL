@@ -1,0 +1,173 @@
+{
+  "verification_date": "2026-11-05",
+  "target": "master",
+  "firmware_sha256": "c8b2f7295a5c3dc5584fc85d976e593ac20c38baad335f5fcbc9fc54e0ce3ab2",
+  "byte_identical_to_hardware_tested_firmware": true,
+  "production_firmware_changed_during_verification": false,
+  "clean_builds": {
+    "master": "passed",
+    "throttle": "passed",
+    "steering": "passed"
+  },
+  "host_regressions": {
+    "executables": 15,
+    "result": "passed",
+    "sanitizers": [
+      "address (including leaks)",
+      "undefined behavior"
+    ],
+    "production_mpu_flags": [
+      "HAL_CAN_MODULE_ENABLED",
+      "CARL_IMU_MPU_SPI"
+    ]
+  },
+  "native_protocol": {
+    "tests_passed": 19
+  },
+  "ros_bridge_and_teleop": {
+    "tests_passed": 59,
+    "subtests_passed": 35
+  },
+  "production_mpu_simulation": {
+    "duration_seconds": 1800,
+    "complete_imu_samples": 180000,
+    "temperature_frames": 180000,
+    "commands": 90000,
+    "heartbeats": 36000,
+    "steering_feedback": 90000,
+    "encoder_feedback": 90000,
+    "throttle_status": 36000,
+    "steering_status": 36000,
+    "verified_cpp_to_python": true,
+    "checks": [
+      "forward/reverse and independent wheel commands",
+      "turns and pivots",
+      "neutral",
+      "unchanged original operator intent",
+      "20 ms command cadence",
+      "50 ms heartbeat cadence/flags/counters",
+      "sequence rollover",
+      "fixed-point/endian conversions",
+      "serial CRC/resynchronization",
+      "no IMU frames on CAN",
+      "no MPU heading correction"
+    ]
+  },
+  "fault_checks": [
+    "unknown/missing identities",
+    "configuration readback failure",
+    "absent data-ready",
+    "all-FF SPI status",
+    "identity loss",
+    "sensor reconnection and recovery",
+    "saturating error counts",
+    "millis rollover",
+    "malformed and corrupt serial commands",
+    "CAN and serial e-stop, clear without stale-command revival",
+    "teleop watchdog expiry during IMU failure",
+    "edge-node heartbeat and command watchdogs",
+    "throttle PWM, physical encoder mapping and rear RPM regulation",
+    "steering ADC/rail faults and disabled steering motor"
+  ],
+  "hardware_observation": {
+    "seconds": 180.00677948499992,
+    "samples": 18030,
+    "sample_hz": 100.16289415089753,
+    "frame_counts": {
+      "0x230": 18030,
+      "0x231": 18030,
+      "0x232": 18030,
+      "0x239": 1830,
+      "0x210": 9000,
+      "0x221": 9000,
+      "0x200": 3600,
+      "0x220": 3600,
+      "0x010": 3658,
+      "0x23b": 183
+    },
+    "crc_errors": 0,
+    "discarded_bytes": 7,
+    "crc_events": [],
+    "last_diagnostic": {
+      "schema": 1,
+      "sensor": "MPU-9250",
+      "interface": "spi",
+      "who_am_i": "0x71",
+      "stage": "ready",
+      "error": "ok",
+      "ready": true,
+      "register": "0x3a",
+      "value": "0x00",
+      "error_count": 0,
+      "orientation_supported": false
+    },
+    "diagnostic_frames": 183,
+    "first_error_count": 0,
+    "last_error_count": 0,
+    "sensor_error_increases": 0,
+    "sensor_counter_decreases": 0,
+    "diagnostic_states": {
+      "ready:ok": 183
+    },
+    "heartbeat_flags": {
+      "flags=0x01,mode=0": 3658
+    },
+    "heartbeat_counter_gaps": 0,
+    "throttle_outputs": {
+      "state=1,faults=0x00,left=0,right=0": 3600
+    },
+    "first_sample_s": 0.0012593959997957427,
+    "last_sample_s": 179.99821751699983,
+    "max_sample_gap_s": 0.017031112999802644,
+    "accel_mps2": [
+      {
+        "mean": 3.2939001180817002,
+        "min": 2.549226217651367,
+        "max": 3.697245913696289
+      },
+      {
+        "mean": 1.5006531002611274,
+        "min": 1.034893667602539,
+        "max": 1.915959878540039
+      },
+      {
+        "mean": -9.932386586035772,
+        "min": -10.413580120849609,
+        "max": -9.3852705078125
+      }
+    ],
+    "gyro_radps": [
+      {
+        "mean": 0.12830489171590687,
+        "min": 0.057689127184240054,
+        "max": 0.1859908118919148
+      },
+      {
+        "mean": -0.16590690805951847,
+        "min": -0.2963062791172053,
+        "max": 0.0003996937218307625
+      },
+      {
+        "mean": 0.009525169141506085,
+        "min": -0.2435467078355446,
+        "max": 0.2591347629869444
+      }
+    ],
+    "mean_accel_norm_mps2": 10.571403023343029
+  },
+  "limits": [
+    "Hardware observation sent no commands and exercised no vehicle movement.",
+    "Fault injection and motor-output checks used host hardware doubles.",
+    "Bus-off recovery configuration was checked; real CAN electrical faults were not injected.",
+    "Sensor calibration, raw gyro bias, and loaded vehicle behavior remain unvalidated.",
+    "Fused orientation and heading correction remain inactive for the MPU build."
+  ],
+  "reproduce": [
+    "python3 firmware/test/run_host_regressions.py",
+    "python3 firmware/test/run_host_regressions.py --address-sanitizer",
+    "pio run -d firmware -e master -e throttle -e steering",
+    "pio test -d firmware -e native",
+    "source /opt/ros/lyrical/setup.bash; source ros2_ws/install/setup.bash; python3 -m pytest -q ros2_ws/src/carl_bridge/test ros2_ws/src/carl_teleop/test",
+    "python3 firmware/tools/monitor_mpu_spi.py --seconds 180"
+  ]
+}

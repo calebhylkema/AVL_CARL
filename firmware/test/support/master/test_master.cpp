@@ -14,6 +14,30 @@ static void reset(uint32_t now = 0) {
   teleopWatch = Watchdog(TELEOP_TIMEOUT_MS);
   parser = WireParser();
   lastCmdMs = now;
+  headingHold = HeadingHold();
+#ifdef CARL_IMU_MPU_SPI
+  mpuHeading = MpuHeading();
+  haveEncoderEvidence = haveOutputEvidence = outputsIdle = false;
+  previousEncoders = {};
+  lastEncoderEvidenceMs = lastEncoderMotionMs = lastOutputEvidenceMs = now;
+  std::fill(std::begin(ImuSpi.registers), std::end(ImuSpi.registers), 0);
+  ImuSpi.ignoreWrites = false;
+  mpu.begin(now);
+  reportedMpuStage = MpuSpiTest::POWER_WAIT;
+#else
+  imu = Bno08x();
+  imuTransport.wake(false);
+  imuTransport.begin();
+  imu.begin(imuTransport, now);
+  imuSampleValid = imuTelemetryPending = false;
+#endif
+  imuSequence = 0;
+  lastImuDiagnosticMs = lastHeadingStatusMs = now;
+  reportedImuErrors = 0;
+#ifndef CARL_IMU_MPU_SPI
+  reportedImuReady = false;
+  reportedImuStage = Bno08x::POWER_WAIT;
+#endif
   Can1.sent.clear(); Can1.rx.clear();
   Serial.tx.clear(); Serial.rx.clear(); Serial.advanceOnRead = 0;
 }
@@ -46,7 +70,7 @@ static void test_passthrough_and_safety() {
     // Repeated commands and long runs must preserve all four original values.
     for (unsigned i = 0; i < 100; ++i) {
       fake_master::now += THROTTLE_CMD_PERIOD_MS;
-      input(cmd); sendThrottleCmd(true);
+      input(cmd); sendThrottleCmd(fake_master::now, true);
       assert(equal(sent(), cmd) && equal(currentCmd, cmd));
     }
   }
@@ -55,15 +79,15 @@ static void test_passthrough_and_safety() {
   handleWireFrame(CANID_ESTOP, &reason, 1);
   assert(estopLatched && Can1.sent.back().id == CANID_ESTOP);
   // New commands received during a latched stop must still produce zero.
-  input({200, 200, 200, 200}); sendThrottleCmd(true); stopped();
+  input({200, 200, 200, 200}); sendThrottleCmd(fake_master::now, true); stopped();
   reason = 0;
   handleWireFrame(CANID_ESTOP, &reason, 1);
   assert(!estopLatched);
-  sendThrottleCmd(true); stopped(); // Reset cannot revive retained commands.
+  sendThrottleCmd(fake_master::now, true); stopped(); // Reset cannot revive retained commands.
   input({-200, -200, -200, -200});
   fake_master::now += TELEOP_TIMEOUT_MS;
   assert(teleopWatch.expired(fake_master::now));
-  sendThrottleCmd(false); stopped();
+  sendThrottleCmd(fake_master::now, false); stopped();
   const auto count = Can1.sent.size();
   handleWireFrame(CANID_ESTOP, &reason, 1);
   assert(Can1.sent.size() == count && teleopWatch.expired(fake_master::now));
@@ -73,9 +97,9 @@ static void test_passthrough_and_safety() {
   externalStop.id = CANID_ESTOP; externalStop.len = 1;
   Can1.rx.push_back(externalStop); pollCan();
   assert(estopLatched && equal(currentCmd, {0, 0, 0, 0}));
-  sendThrottleCmd(true); stopped();
+  sendThrottleCmd(fake_master::now, true); stopped();
   handleWireFrame(CANID_ESTOP, &reason, 1);
-  sendThrottleCmd(true); stopped();
+  sendThrottleCmd(fake_master::now, true); stopped();
 }
 
 static void test_loop_and_watchdog() {
@@ -105,7 +129,7 @@ static void test_loop_and_watchdog() {
     assert(unpack_heartbeat(frame.buf, frame.len, &status));
     if (!(status.flags & HB_FLAG_TELEOP_OK)) assert(status.mode == MODE_IDLE);
   }
-  sendThrottleCmd(false); stopped();
+  sendThrottleCmd(fake_master::now, false); stopped();
   // Malformed commands and bad CRCs cannot feed the watchdog or move the kart.
   enqueue(CANID_THROTTLE_CMD, bytes, 7);
   enqueue(CANID_THROTTLE_CMD, bytes, 8, true);
@@ -143,8 +167,14 @@ static void test_heartbeat_stream() {
   for (auto byte : Serial.tx) {
     const auto result = p.feed(byte);
     if (!result.valid) continue;
-    // No extra local telemetry is emitted on the idle companion link.
-    assert(result.msg_id == CANID_HEARTBEAT);
+    // Restored sensor health/status is wire-only; heartbeat bytes stay intact.
+    if (result.msg_id != CANID_HEARTBEAT) {
+      assert(result.msg_id == WIREID_MPU_SPI_DIAGNOSTICS
+          || result.msg_id == WIREID_BNO_DIAGNOSTICS
+          || result.msg_id == WIREID_BNO_SPI_DIAGNOSTICS
+          || result.msg_id == WIREID_HEADING_STATUS);
+      continue;
+    }
     Heartbeat h;
     assert(unpack_heartbeat(result.payload, result.len, &h));
     assert(h.counter == ++serialBeats && h.flags == HB_FLAG_OK && h.mode == MODE_IDLE);

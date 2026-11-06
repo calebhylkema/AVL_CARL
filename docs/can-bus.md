@@ -55,6 +55,16 @@ to the companion. Existing 0x220 idle status stays unchanged. See
 
 ### 3.1 Master-to-companion wire-only telemetry
 
+The standard `master` build uses the installed MPU sensor and the retained raw
+MPU IDs 0x230–0x232, with local calibrated relative heading correction and
+wire-only heading status 0x239. Wire-only diagnostic
+**0x23b** (8 bytes) is schema 1, stage, WHO_AM_I, error, register, readback value,
+cumulative error count u16 LE. It has no I2C address field. Stages: power wait,
+identify, reset wait, wake wait, configure, ready, retry wait (0–6). Errors: OK,
+wrong identity, verify failed, data timeout, identity lost (0–4). The bridge
+publishes identified sensor name and `interface=spi` on `/carl/imu/diagnostics`.
+BNO IDs below remain reserved for the preserved BNO implementation.
+
 SPI receive diagnostics `0x23a` accompany BNO health frames without changing
 `0x238`. Eight bytes: schema=1, result (0=not attempted, 1=empty, 2=packet,
 3=invalid length), four raw SHTP header bytes, GPIO bits, reserved=0.
@@ -81,23 +91,28 @@ limited to eight bytes so the framing layer keeps one consistent maximum size.
 | `0x238` | BNO SPI diagnostics | Master → Companion | 1 Hz and state/error changes | 8 | schema=1, stage, failed stage, error, detail, ready, cumulative count `uint16` |
 | `0x239` | Heading hold status | Master → Companion | 10 Hz | 8 | state `u8`, ready `u8`, yaw `i16` mrad, reference-minus-yaw `i16` mrad, signed differential trim `i16` per-mille |
 
-**Current firmware uses BNO `0x234`–`0x238`; `0x230`–`0x233` below describe
-the retained legacy MPU protocol.** All integers are little-endian. The new
+**Current master uses MPU `0x230`–`0x232` and SPI health `0x23b`.
+BNO `0x234`–`0x238` below describe the preserved BNO protocol.** All integers are little-endian. The new
 IDs intentionally prevent older bridges interpreting BNO SI units as MPU ADC
 counts. Every BNO snapshot uses one sequence across all four parts. Status
 bits 0 and 1 mean initialized/valid; quaternion status bits 4–5 preserve SH-2
 rotation accuracy (0 unreliable, 1 low, 2 medium, 3 high). The bridge requires
 all four valid parts within 100 ms and publishes no synthetic temperature.
 
-The master additionally requests game rotation (`0x08`) for local heading hold.
+The preserved BNO implementation additionally requests game rotation (`0x08`) for local heading hold.
 This does not replace the magnetic rotation (`0x05`) in `0x236/0x237`. Control
 needs fresh game orientation and gyro reports with calibration status >=2;
 the existing three reports still determine BNO driver READY. Wire-only `0x239`
 exposes heading states 0 disabled, 1 idle, 2 holding, 3 manual turn, 4 waiting
 for IMU, 5 neutral required. `ready` indicates fresh, qualified control data
-after its 500 ms warmup. Yaw is an arbitrary game-vector heading, not north.
+after its 500 ms warmup. In the current MPU build, the same heading status follows
+three seconds of stationary gyro calibration, and yaw is integrated relative yaw.
+The preserved BNO adapter uses arbitrary game-vector yaw. Neither is magnetic north.
 Positive trim subtracts from signed left commands and adds to signed right
 commands; error is wrapped to +/-pi. Older bridges may ignore this extra frame.
+MPU correction expires after 30 seconds per straight run; stale/motion/thermal
+faults require stationary neutral recalibration. See
+[firmware behavior and limits](../firmware/README.md#mpu-relative-heading-hold).
 
 BNO stages: 0 power wait, 1 reset low, 2 boot wait, 3 identify, 4 configure,
 5 stream wait, 6 ready, 7 retry wait. Errors: 0 OK, 1 boot timeout,

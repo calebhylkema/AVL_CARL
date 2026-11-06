@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import json
+import hashlib
+from pathlib import Path
 import math
 import time
 import struct
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Imu, Temperature
 from std_msgs.msg import String
 
@@ -23,6 +26,7 @@ from carl_msgs.msg import (
 from carl_bridge import protocol
 from carl_bridge.steering import SteeringConfig
 from carl_bridge.transports import make_transport
+from carl_bridge.transport_diagnostics import ObservedTransport
 
 
 class BridgeNode(Node):
@@ -112,10 +116,34 @@ class BridgeNode(Node):
         )
         self._last_bno_spi_fault = None
 
+        self._pub_transport_diagnostics = self.create_publisher(
+            String, 'carl/bridge_diagnostics', QoSProfile(depth=100, reliability=ReliabilityPolicy.BEST_EFFORT))
+        self._transport = ObservedTransport(self._transport, self._transport_event,
+                                           configuration={
+                                               'parameters': {name: self.get_parameter(name).value for name in
+                                                   ('transport', 'serial.port', 'serial.baud', 'udp.remote_host',
+                                                    'udp.remote_port', 'udp.local_port')},
+                                               'source_hashes': {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                                                                 for p in Path(__file__).parent.glob('*.py')}})
+
         poll_hz = self.get_parameter('poll_rate_hz').value
         self.create_timer(1.0 / poll_hz, self._poll)
 
         self.get_logger().info(f'carl_bridge up on transport={kind}')
+
+    def _transport_event(self, event, **fields):
+        if event == 'transport_summary':
+            fields['parser'] = dict(crc_errors=self._parser.crc_errors,
+                                    discarded_bytes=self._parser.discarded_bytes,
+                                    frames_parsed=self._parser.frames_parsed,
+                                    buffered_bytes=len(self._parser._buf),
+                                    last_crc_error=self._parser.last_crc_error)
+        message = String()
+        message.data = json.dumps(dict(event=event, mono_ns=time.monotonic_ns(),
+                                       wall_ns=time.time_ns(), data=fields), allow_nan=False)
+        self._pub_transport_diagnostics.publish(message)
+        if event == 'transport_error':
+            self.get_logger().error(message.data)
 
     def _on_throttle_cmd(self, msg: CarlThrottleCmd):
         try:
@@ -143,6 +171,8 @@ class BridgeNode(Node):
         self._check_steering_timeout()
 
     def _dispatch(self, msg_id: int, payload: bytes):
+        if isinstance(getattr(self, '_transport', None), ObservedTransport):
+            self._transport.observe_frame(msg_id)
         stamp = self.get_clock().now().to_msg()
         if msg_id == protocol.MSG_HEARTBEAT and len(payload) == 3:
             counter, flags, mode = struct.unpack('<BBB', payload)
@@ -222,6 +252,23 @@ class BridgeNode(Node):
                     self.get_logger().warning(f'BNO08x SPI diagnostic: {msg.data}')
                 elif diagnostics['ready']:
                     self.get_logger().info(f'BNO08x SPI ready: {msg.data}')
+        elif msg_id == protocol.MSG_MPU_SPI_DIAGNOSTICS:
+            try:
+                diagnostics = protocol.unpack_mpu_spi_diagnostics(payload)
+            except ValueError:
+                return
+            if not diagnostics['ready']:
+                self._imu_assembler._reset()
+            msg = String()
+            msg.data = json.dumps(diagnostics, sort_keys=True)
+            self._pub_imu_diagnostics.publish(msg)
+            health = (diagnostics['sensor'], diagnostics['stage'], diagnostics['error'])
+            if health != self._last_imu_health:
+                self._last_imu_health = health
+                if diagnostics['error'] != 'ok':
+                    self.get_logger().warning(f'MPU SPI diagnostic: {msg.data}')
+                elif diagnostics['ready']:
+                    self.get_logger().info(f'MPU SPI ready: {msg.data}')
         elif msg_id == protocol.MSG_IMU_ACCEL and len(payload) == 8:
             sample = self._imu_assembler.add_accel(payload)
             if sample is not None:
@@ -285,9 +332,9 @@ class BridgeNode(Node):
     def _publish_imu(self, sample: protocol.ImuRawSample, stamp) -> None:
         """Convert one paired raw sample and publish the standard ROS IMU type.
 
-        The MPU-6500 does not contain a magnetometer, and this bridge does not
-        estimate orientation. ROS represents that condition by placing -1 in
-        the first orientation covariance element. Acceleration and angular-
+        The raw MPU SPI stream supplies accelerometer/gyro data only; this
+        bridge does not read a magnetometer or estimate orientation. ROS represents
+        that condition by placing -1 in the first orientation covariance element. Acceleration and angular-
         velocity covariance remain all-zero until measurements from the mounted
         sensor provide defensible calibration values.
         """
@@ -311,7 +358,7 @@ class BridgeNode(Node):
         sample: protocol.ImuTemperatureTelemetry,
         stamp,
     ) -> None:
-        """Publish the MPU-6500 die temperature in degrees Celsius."""
+        """Publish the MPU sensor die temperature in degrees Celsius."""
         msg = Temperature()
         msg.header.stamp = stamp
         msg.header.frame_id = 'imu_link'

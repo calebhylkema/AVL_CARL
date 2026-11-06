@@ -1,0 +1,153 @@
+{
+  "seconds": 60.00487340000018,
+  "samples": 6042,
+  "sample_hz": 100.69182147462013,
+  "frame_counts": {
+    "0x232": 6043,
+    "0x230": 6042,
+    "0x231": 6042,
+    "0x221": 3016,
+    "0x210": 3016,
+    "0x010": 1226,
+    "0x239": 614,
+    "0x220": 1206,
+    "0x200": 1206,
+    "0x23b": 61
+  },
+  "crc_errors": 1,
+  "discarded_bytes": 16,
+  "last_diagnostic": {
+    "stage": "ready",
+    "who_am_i": "0x71",
+    "error": "ok",
+    "register": "0x3a",
+    "value": "0x00",
+    "error_count": 5
+  },
+  "diagnostic_frames": 61,
+  "first_error_count": 5,
+  "last_error_count": 5,
+  "first_sample_s": 0.00034197600007246365,
+  "last_sample_s": 59.999425884000175,
+  "max_sample_gap_s": 0.01641408399973443,
+  "accel_mps2": [
+    {
+      "mean": 5.0498569176439965,
+      "min": -1.5017629913330077,
+      "max": 5.36241316833496
+    },
+    {
+      "mean": 1.6528332723688897,
+      "min": 1.282693539428711,
+      "max": 9.976638317871092
+    },
+    {
+      "mean": -9.003363444104362,
+      "min": -9.503184939575196,
+      "max": -0.4375403533935547
+    }
+  ],
+  "gyro_radps": [
+    {
+      "mean": 0.12872056266971255,
+      "min": 0.06581623286146555,
+      "max": 0.18412557452337125
+    },
+    {
+      "mean": -0.16706009031667068,
+      "min": -0.25167381351277013,
+      "max": -0.08873200624642928
+    },
+    {
+      "mean": 0.009082635195491665,
+      "min": -0.136828484106731,
+      "max": 0.16840428813136127
+    }
+  ],
+  "mean_accel_norm_mps2": 10.500475323035412,
+  "target": "master_mpu_spi",
+  "test_date": "2026-11-05",
+  "requested_spi_hz": 1000000,
+  "spi_mode": 3,
+  "hardware_port": "ST-LINK VCP",
+  "firmware_sha256": "c8b2f7295a5c3dc5584fc85d976e593ac20c38baad335f5fcbc9fc54e0ce3ab2",
+  "notes": [
+    "Raw accelerometer/gyro/temperature only; no fused orientation or heading assist.",
+    "Historical sensor error count stayed at 5 throughout this capture.",
+    "One serial CRC resynchronization recorded; this is distinct from sensor/SPI errors."
+  ],
+  "followup_after_serial_backlog_drain": {
+    "seconds": 20.007031581999854,
+    "samples": 2003,
+    "sample_hz": 100.11480172811248,
+    "frame_counts": {
+      "0x231": 2004,
+      "0x232": 2004,
+      "0x220": 400,
+      "0x221": 1000,
+      "0x210": 1000,
+      "0x200": 400,
+      "0x230": 2003,
+      "0x010": 406,
+      "0x239": 203,
+      "0x23b": 21
+    },
+    "crc_errors": 0,
+    "discarded_bytes": 12,
+    "crc_events": [],
+    "last_diagnostic": {
+      "schema": 1,
+      "sensor": "MPU-9250",
+      "interface": "spi",
+      "who_am_i": "0x71",
+      "stage": "ready",
+      "error": "ok",
+      "ready": true,
+      "register": "0x3b",
+      "value": "0x20",
+      "error_count": 5,
+      "orientation_supported": false
+    },
+    "diagnostic_frames": 21,
+    "first_error_count": 5,
+    "last_error_count": 5,
+    "first_sample_s": 0.009987757000089914,
+    "last_sample_s": 19.99546071399982,
+    "max_sample_gap_s": 0.015832028000204446,
+    "accel_mps2": [
+      {
+        "mean": 5.013396718011971,
+        "min": 4.958391638183594,
+        "max": 5.070320565795898
+      },
+      {
+        "mean": 1.5096591951108371,
+        "min": 1.43652099609375,
+        "max": 1.5741875915527344
+      },
+      {
+        "mean": -9.090164534137514,
+        "min": -9.139266287231445,
+        "max": -9.044695321655272
+      }
+    ],
+    "gyro_radps": [
+      {
+        "mean": 0.1281906697598073,
+        "min": 0.11631087305275188,
+        "max": 0.14322358365602322
+      },
+      {
+        "mean": -0.16531728769365686,
+        "min": -0.1822603371548277,
+        "max": -0.15015160816775644
+      },
+      {
+        "mean": 0.008463077218075425,
+        "min": -0.014122511504686942,
+        "max": 0.028111791768763626
+      }
+    ],
+    "mean_accel_norm_mps2": 10.490215482539519
+  }
+}

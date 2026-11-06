@@ -2,7 +2,19 @@
 #include <cstdint>
 #include <deque>
 #include <vector>
-struct FakeCanRegisters { uint32_t MCR = 0, MSR = 0; };
+struct FakeCanRegisters {
+  // bxCAN acknowledges initialization requests in hardware. Model that
+  // handshake so the actual setup()/ABOM path can be exercised on the host.
+  struct Control {
+    uint32_t* status;
+    uint32_t value = 0;
+    operator uint32_t() const { return value; }
+    void operator|=(uint32_t bits) { value |= bits; *status = value & 1; }
+    void operator&=(uint32_t bits) { value &= bits; *status = value & 1; }
+  };
+  uint32_t MSR = 0;
+  Control MCR{&MSR};
+};
 inline FakeCanRegisters fake_can_registers;
 #define CAN1 (&fake_can_registers)
 static const uint32_t CAN_MCR_INRQ = 1, CAN_MCR_ABOM = 64, CAN_MSR_INAK = 1;

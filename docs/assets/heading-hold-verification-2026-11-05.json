@@ -1,0 +1,106 @@
+{
+  "branch": "imu-pd12-integration",
+  "date_local": "2026-11-05",
+  "timezone": "America/Los_Angeles",
+  "deployment": {
+    "flashed": false,
+    "powered_drivetrain_test": false,
+    "reason": "Operator explicitly requested testing off the powered drivetrain."
+  },
+  "reference": "Current relative yaw captured at the start of each equal four-wheel forward/reverse command run.",
+  "limits": {
+    "max_straight_run_ms": 30000,
+    "calibration_lifetime_ms": 60000,
+    "calibration_ms": 3000,
+    "heading_warmup_ms": 500,
+    "max_imu_gap_ms": 30,
+    "max_trim_per_mille": 100,
+    "max_trim_input_fraction": 0.25
+  },
+  "live_read_only_capture": {
+    "interface": "Existing local rosbridge subscriptions; no drive publications and no serial takeover.",
+    "start_local": "2026-11-05T18:19:14-08:00",
+    "samples": 2004,
+    "elapsed_sample_stamp_ms": 20000,
+    "gyro_mean_rad_s": [
+      0.12829470402890025,
+      -0.1660812512005212,
+      0.009616117701151583
+    ],
+    "gyro_stddev_rad_s": [
+      0.0007456083880258078,
+      0.000949405600630966,
+      0.0008023781110031196
+    ],
+    "acceleration_mean_m_s2": [
+      -0.2436661703570398,
+      -0.1323283262134788,
+      -10.64759989262655
+    ],
+    "max_host_sample_gap_ms": 20.43382899955759,
+    "rear_counts_unchanged": false,
+    "applied_outputs_zero": true,
+    "spi_error_count_start": 3,
+    "spi_error_count_end": 3
+  },
+  "validation": {
+    "all_board_builds": {
+      "command": "pio run -d firmware -e master -e throttle -e steering",
+      "passed": true
+    },
+    "host_ubsan": {
+      "command": "python3 firmware/test/run_host_regressions.py",
+      "passed": true,
+      "suites": 18
+    },
+    "host_asan_ubsan": {
+      "command": "python3 firmware/test/run_host_regressions.py --address-sanitizer",
+      "passed": true,
+      "suites": 18,
+      "environment": "Outside sandbox because LeakSanitizer cannot run under sandbox ptrace."
+    },
+    "protocol": {
+      "command": "pio test -d firmware -e native",
+      "passed": true,
+      "cases": 19
+    },
+    "ros": {
+      "command": "source /opt/ros/lyrical/setup.bash; source install/setup.bash; PYTHONPATH=ros2_ws/src/carl_bridge:ros2_ws/src/carl_teleop:$PYTHONPATH python3 -m pytest -q ros2_ws/src/carl_bridge/test ros2_ws/src/carl_teleop/test",
+      "passed": true,
+      "tests": 59,
+      "subtests": 35
+    },
+    "live_stationary_replay": {
+      "samples": 2004,
+      "peak_heading_error_deg": 0.2522,
+      "max_absolute_trim_per_mille": 1
+    },
+    "heading_endurance": {
+      "simulated_seconds": 600,
+      "scheduled_commands": 30000,
+      "on_time_heartbeats": 12000,
+      "passed": true
+    },
+    "raw_mpu_endurance": {
+      "simulated_seconds": 1800,
+      "samples": 180000,
+      "scheduled_commands": 90000,
+      "on_time_heartbeats": 36000,
+      "passed": true
+    }
+  },
+  "unvalidated": [
+    "Real chassis yaw/correction sign",
+    "Physical vehicle dynamics and gains under load",
+    "Electrical timing and vibration while driving",
+    "Residual gyro drift over changing temperature",
+    "Ground performance with front-left wheel misalignment"
+  ],
+  "source_sha256": {
+    "firmware/master/src/main.cpp": "c45a3af00abe7c84c97a2aaebafe6fbb7d44f39784606610c8b1805b7c81a345",
+    "firmware/master/src/heading_hold.h": "984e00efa1845791b8691986cc69735517f91631e03b7e204400d26aaaafc73a",
+    "firmware/master/src/mpu_heading.h": "3035dfbf4bdd3680742b66d76e263b2293eae03fd0a8ac1e10465decebec6bd2",
+    "firmware/test/fixtures/mpu_stationary.csv": "4a464a8a0ddcfd7bf8cc7624896b395608960cfbba5138fa0a30a8b4779a85b4"
+  },
+  "built_master_binary_sha256": "76fd873190c31d72e057b5c12ade044358ab2a7f4a60800bac828d22f9fcad5a"
+}

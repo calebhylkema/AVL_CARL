@@ -9,6 +9,7 @@
 
 #include "common.h"
 #include "messages.h"
+#include "imu_telemetry.h"
 #include "wire.h"
 
 using namespace carl;
@@ -159,6 +160,165 @@ void test_clamp_and_mix() {
   TEST_ASSERT_EQUAL_INT16(600, clampv<int16_t>(vx - wz, THROTTLE_MIN, THROTTLE_MAX));
 }
 
+void test_imu_axis_telemetry_layout_and_roundtrip() {
+  const ImuAxisTelemetry input = {
+      0xA5,
+      (uint8_t)(IMU_STATUS_INITIALIZED | IMU_STATUS_SAMPLE_VALID),
+      0x1234,
+      -2,
+      INT16_MIN,
+  };
+
+  uint8_t payload[8] = {0};
+  TEST_ASSERT_EQUAL_UINT8(8, pack_imu_axis(payload, input));
+
+  // Confirm the exact documented little-endian wire representation.
+  TEST_ASSERT_EQUAL_HEX8(0xA5, payload[0]);
+  TEST_ASSERT_EQUAL_HEX8(0x03, payload[1]);
+  TEST_ASSERT_EQUAL_HEX8(0x34, payload[2]);
+  TEST_ASSERT_EQUAL_HEX8(0x12, payload[3]);
+  TEST_ASSERT_EQUAL_HEX8(0xFE, payload[4]);
+  TEST_ASSERT_EQUAL_HEX8(0xFF, payload[5]);
+  TEST_ASSERT_EQUAL_HEX8(0x00, payload[6]);
+  TEST_ASSERT_EQUAL_HEX8(0x80, payload[7]);
+
+  ImuAxisTelemetry output;
+  TEST_ASSERT_TRUE(unpack_imu_axis(payload, sizeof(payload), &output));
+  TEST_ASSERT_EQUAL_UINT8(input.sequence, output.sequence);
+  TEST_ASSERT_EQUAL_UINT8(input.status, output.status);
+  TEST_ASSERT_EQUAL_INT16(input.x, output.x);
+  TEST_ASSERT_EQUAL_INT16(input.y, output.y);
+  TEST_ASSERT_EQUAL_INT16(input.z, output.z);
+}
+
+void test_imu_axis_telemetry_rejects_invalid_input() {
+  uint8_t payload[9] = {0};
+  ImuAxisTelemetry output = {9, 8, 7, 6, 5};
+
+  TEST_ASSERT_FALSE(unpack_imu_axis(payload, 7, &output));
+  TEST_ASSERT_FALSE(unpack_imu_axis(payload, 9, &output));
+  TEST_ASSERT_FALSE(unpack_imu_axis(nullptr, 8, &output));
+  TEST_ASSERT_FALSE(unpack_imu_axis(payload, 8, nullptr));
+
+  // Rejected payloads must not partially change the previous output value.
+  TEST_ASSERT_EQUAL_UINT8(9, output.sequence);
+  TEST_ASSERT_EQUAL_INT16(5, output.z);
+}
+
+void test_imu_temperature_telemetry_layout_and_roundtrip() {
+  const ImuTemperatureTelemetry input = {0x5A, 0x03, -1234};
+  uint8_t payload[4] = {0};
+
+  TEST_ASSERT_EQUAL_UINT8(4, pack_imu_temperature(payload, input));
+  TEST_ASSERT_EQUAL_HEX8(0x5A, payload[0]);
+  TEST_ASSERT_EQUAL_HEX8(0x03, payload[1]);
+  TEST_ASSERT_EQUAL_HEX8(0x2E, payload[2]);
+  TEST_ASSERT_EQUAL_HEX8(0xFB, payload[3]);
+
+  ImuTemperatureTelemetry output;
+  TEST_ASSERT_TRUE(
+      unpack_imu_temperature(payload, sizeof(payload), &output));
+  TEST_ASSERT_EQUAL_UINT8(input.sequence, output.sequence);
+  TEST_ASSERT_EQUAL_UINT8(input.status, output.status);
+  TEST_ASSERT_EQUAL_INT16(input.temperature, output.temperature);
+}
+
+void test_imu_temperature_telemetry_rejects_invalid_input() {
+  uint8_t payload[5] = {0};
+  ImuTemperatureTelemetry output = {9, 8, 7};
+
+  TEST_ASSERT_FALSE(unpack_imu_temperature(payload, 3, &output));
+  TEST_ASSERT_FALSE(unpack_imu_temperature(payload, 5, &output));
+  TEST_ASSERT_FALSE(unpack_imu_temperature(nullptr, 4, &output));
+  TEST_ASSERT_FALSE(unpack_imu_temperature(payload, 4, nullptr));
+
+  TEST_ASSERT_EQUAL_UINT8(9, output.sequence);
+  TEST_ASSERT_EQUAL_INT16(7, output.temperature);
+}
+
+void test_imu_wire_ids_frame_and_parse() {
+  const ImuAxisTelemetry input = {255, 0x03, 100, -200, 300};
+  uint8_t payload[8];
+  uint8_t payload_len = pack_imu_axis(payload, input);
+
+  const uint16_t ids[2] = {WIREID_IMU_ACCEL, WIREID_IMU_GYRO};
+  for (uint8_t id_index = 0; id_index < 2; ++id_index) {
+    uint8_t frame[WIRE_MAX_FRAME];
+    uint8_t frame_len = wire_frame(frame, ids[id_index], payload, payload_len);
+
+    WireParser parser;
+    WireParser::Result result = {false, 0, 0, nullptr};
+    for (uint8_t i = 0; i < frame_len; ++i) result = parser.feed(frame[i]);
+
+    TEST_ASSERT_TRUE(result.valid);
+    TEST_ASSERT_EQUAL_UINT16(ids[id_index], result.msg_id);
+    TEST_ASSERT_EQUAL_UINT8(8, result.len);
+
+    ImuAxisTelemetry output;
+    TEST_ASSERT_TRUE(unpack_imu_axis(result.payload, result.len, &output));
+    TEST_ASSERT_EQUAL_UINT8(255, output.sequence);
+    TEST_ASSERT_EQUAL_INT16(-200, output.y);
+  }
+}
+
+void test_imu_temperature_wire_frame_and_parse() {
+  const ImuTemperatureTelemetry input = {255, 0x03, 3339};
+  uint8_t payload[4];
+  const uint8_t payload_len = pack_imu_temperature(payload, input);
+  uint8_t frame[WIRE_MAX_FRAME];
+  const uint8_t frame_len = wire_frame(
+      frame, WIREID_IMU_TEMPERATURE, payload, payload_len);
+
+  WireParser parser;
+  WireParser::Result result = {false, 0, 0, nullptr};
+  for (uint8_t i = 0; i < frame_len; ++i) result = parser.feed(frame[i]);
+
+  TEST_ASSERT_TRUE(result.valid);
+  TEST_ASSERT_EQUAL_UINT16(WIREID_IMU_TEMPERATURE, result.msg_id);
+  TEST_ASSERT_EQUAL_UINT8(4, result.len);
+
+  ImuTemperatureTelemetry output;
+  TEST_ASSERT_TRUE(
+      unpack_imu_temperature(result.payload, result.len, &output));
+  TEST_ASSERT_EQUAL_UINT8(255, output.sequence);
+  TEST_ASSERT_EQUAL_INT16(3339, output.temperature);
+}
+
+void test_imu_diagnostics_layout_and_framing() {
+  const ImuDiagnostics diagnostic = {8, 1, 0x68, 0x70, 2, 0x75, 0x1234};
+  uint8_t payload[8];
+  TEST_ASSERT_EQUAL_UINT8(8, pack_imu_diagnostics(payload, diagnostic));
+  const uint8_t expected[] = {8, 1, 0x68, 0x70, 2, 0x75, 0x34, 0x12};
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, payload, 8);
+  uint8_t frame[WIRE_MAX_FRAME];
+  const uint8_t len = wire_frame(frame, WIREID_IMU_DIAGNOSTICS, payload, 8);
+  WireParser parser;
+  WireParser::Result result = {false, 0, 0, nullptr};
+  for (uint8_t i = 0; i < len; ++i) result = parser.feed(frame[i]);
+  TEST_ASSERT_TRUE(result.valid);
+  TEST_ASSERT_EQUAL_UINT16(0x233, result.msg_id);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, result.payload, 8);
+}
+
+void test_bno_ids_preserve_si_payloads_and_legacy_separation() {
+  const uint16_t ids[] = {WIREID_BNO_ACCEL, WIREID_BNO_GYRO,
+      WIREID_BNO_QUAT_XYZ, WIREID_BNO_QUAT_W, WIREID_BNO_DIAGNOSTICS};
+  const uint8_t payload[8] = {0xff, 0x33, 0x00, 0x80, 0xff, 0x7f, 0, 0};
+  for (unsigned i = 0; i < 5; ++i) {
+    TEST_ASSERT_EQUAL_UINT16(0x234 + i, ids[i]);
+    const uint8_t size = i == 3 ? 6 : 8;
+    uint8_t frame[WIRE_MAX_FRAME];
+    uint8_t n = wire_frame(frame, ids[i], payload, size);
+    WireParser parser;
+    WireParser::Result result = {false, 0, 0, nullptr};
+    for (uint8_t j = 0; j < n; ++j) result = parser.feed(frame[j]);
+    TEST_ASSERT_TRUE(result.valid);
+    TEST_ASSERT_EQUAL_UINT16(ids[i], result.msg_id);
+    TEST_ASSERT_EQUAL_UINT8(size, result.len);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(payload, result.payload, size);
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_i16_le_roundtrip);
@@ -172,5 +332,13 @@ int main(int, char**) {
   RUN_TEST(test_wire_rejects_bad_crc);
   RUN_TEST(test_wire_resyncs_after_garbage);
   RUN_TEST(test_clamp_and_mix);
+  RUN_TEST(test_imu_axis_telemetry_layout_and_roundtrip);
+  RUN_TEST(test_imu_axis_telemetry_rejects_invalid_input);
+  RUN_TEST(test_imu_temperature_telemetry_layout_and_roundtrip);
+  RUN_TEST(test_imu_temperature_telemetry_rejects_invalid_input);
+  RUN_TEST(test_imu_wire_ids_frame_and_parse);
+  RUN_TEST(test_imu_temperature_wire_frame_and_parse);
+  RUN_TEST(test_imu_diagnostics_layout_and_framing);
+  RUN_TEST(test_bno_ids_preserve_si_payloads_and_legacy_separation);
   return UNITY_END();
 }

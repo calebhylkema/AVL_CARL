@@ -110,6 +110,22 @@ A normal right-side value does not prove the FR motor is turning. The updated
 throttle firmware reports zero applied output when disabled, even if an old
 nonzero command is retained.
 
+## iPhone copy menu / joystick stuck until refresh
+
+The controls page now disables Safari callouts, selection and native dragging
+inside the joystick area only. A native captured-pointer control replaces the
+library's retained touch state. Interrupted input clears both the command and
+the visible knob; old moves cannot restore a hold. Lost capture is also checked
+before sending held commands, independently of the cancellation callback.
+
+After loading the updated page once, a cancellation should recover with a fresh
+touch at readiness, without refresh or reconnect. Disconnect/reconnect clears
+the touch owner as well. Verify long holds, native touch interruptions and
+release on the physical iPhone with wheels lifted before driving. A Linux
+WebKit/mobile-viewport check does not reproduce every native iOS gesture.
+The sibling controls README documents the scoped CSS, event paths and tests.
+The existing server/lease/firmware timeouts remain in effect; zero output coasts.
+
 ## Idle joystick disconnects
 
 Two old transport deadlines were separate from motor safety: the browser closed

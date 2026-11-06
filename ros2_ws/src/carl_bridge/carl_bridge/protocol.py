@@ -33,6 +33,24 @@ MSG_BNO_QUAT_XYZ = 0x236
 MSG_BNO_QUAT_W = 0x237
 MSG_BNO_DIAGNOSTICS = 0x238
 MSG_BNO_SPI_DIAGNOSTICS = 0x23A
+MSG_MPU_SPI_DIAGNOSTICS = 0x23B
+
+
+def unpack_mpu_spi_diagnostics(payload: bytes) -> dict:
+    if len(payload) != 8 or payload[0] != 1:
+        raise ValueError('Expected eight-byte MPU SPI diagnostic schema 1')
+    _, stage, identity, error, register, value, count = struct.unpack('<BBBBBBH', payload)
+    stages = ('power_wait', 'identify', 'reset_wait', 'wake_wait', 'configure', 'ready', 'retry_wait')
+    errors = ('ok', 'wrong_identity', 'verify_failed', 'data_timeout', 'identity_lost')
+    return {
+        'schema': 1, 'sensor': {0x70: 'MPU-6500', 0x71: 'MPU-9250'}.get(identity, 'unidentified MPU'),
+        'interface': 'spi', 'who_am_i': f'0x{identity:02x}',
+        'stage': stages[stage] if stage < len(stages) else f'unknown_{stage}',
+        'error': errors[error] if error < len(errors) else f'unknown_{error}',
+        'ready': stage == 5 and error == 0, 'register': f'0x{register:02x}',
+        'value': f'0x{value:02x}', 'error_count': count,
+        'orientation_supported': False,
+    }
 
 STEERING_SAMPLE_VALID = 0x01
 STEERING_ADC_RAIL_LOW = 0x02
@@ -399,6 +417,10 @@ class Parser:
 
     def __init__(self):
         self._buf = bytearray()
+        self.crc_errors = 0
+        self.discarded_bytes = 0
+        self.frames_parsed = 0
+        self.last_crc_error = None
 
     def feed(self, data: bytes):
         self._buf.extend(data)
@@ -406,9 +428,11 @@ class Parser:
             # scan for SOF
             i = self._buf.find(SOF)
             if i < 0:
+                self.discarded_bytes += len(self._buf)
                 self._buf.clear()
                 return
             if i > 0:
+                self.discarded_bytes += i
                 del self._buf[:i]
             if len(self._buf) < 4:
                 return
@@ -419,9 +443,15 @@ class Parser:
             body = bytes(self._buf[:frame_len - 1])
             expected = self._buf[frame_len - 1]
             if crc8(body) == expected:
+                self.frames_parsed += 1
                 payload = bytes(self._buf[4:4 + length])
                 del self._buf[:frame_len]
                 yield msg_id, payload
             else:
                 # bad CRC — drop SOF byte and retry
+                self.crc_errors += 1
+                self.discarded_bytes += 1
+                self.last_crc_error = dict(message_id=msg_id, length=length,
+                                           expected_crc=expected, computed_crc=crc8(body),
+                                           frame_prefix_hex=body[:32].hex())
                 del self._buf[0]

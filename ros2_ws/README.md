@@ -57,7 +57,33 @@ single source of truth in [`../firmware/lib/carl_protocol/wire.h`](../firmware/l
 and must be mirrored in [`src/carl_bridge/carl_bridge/protocol.py`](src/carl_bridge/carl_bridge/protocol.py).
 Keep the two in sync. The CAN message/ID map is in [`../docs/can-bus.md`](../docs/can-bus.md).
 
-The current master uses **GY-BNO08X over SPI**. Four wire-only snapshot parts
+The current `master` uses **MPU-6500/9250 over SPI4**. It sends raw acceleration,
+gyro and temperature on `0x230`–`0x232`, and SPI health on `0x23b`. The bridge
+publishes `/carl/imu` with orientation unavailable, `/carl/imu/temperature`, and
+`/carl/imu/diagnostics` with the detected model, `interface=spi` and error count.
+The master now performs stationary-calibrated relative heading correction locally;
+the raw ROS IMU orientation remains unavailable. Wire-only `0x239` heading status
+is currently ignored by the bridge. No bridge/GUI change is needed for control.
+See [calibration, engagement and limits](../firmware/README.md#mpu-relative-heading-hold), the current wiring table in
+`../docs/wiring.md` and build/flash the usual `master` target.
+
+Both the local GUI Telemetry page and the controls application's telemetry
+screens subscribe to the same existing ROS publishers:
+
+| Topic | ROS type | Data |
+|---|---|---|
+| `/carl/imu` | `sensor_msgs/msg/Imu` | Sensor-axis acceleration (m/s², including gravity), angular velocity (rad/s); MPU orientation unavailable (`orientation_covariance[0]=-1`) |
+| `/carl/imu/temperature` | `sensor_msgs/msg/Temperature` | Sensor die temperature in °C, not ambient air |
+| `/carl/imu/diagnostics` | `std_msgs/msg/String` | JSON sensor model/interface, ready/stage, error and cumulative error count |
+
+These topics remain available at their firmware/bridge publication rates;
+browser subscriptions request at most 10 messages/second with a one-message queue.
+Other ROS consumers can subscribe directly without the GUI. No new topic or
+firmware change is needed for the displays. The IMU axes are not transformed to
+the vehicle frame, and the displays do not estimate orientation or vehicle speed.
+
+The bridge also retains **GY-BNO08X SPI** compatibility. The following paragraphs
+describe the preserved BNO telemetry, not the installed MPU. Four wire-only snapshot parts
 are emitted: `0x234` acceleration (Q8 m/s², including gravity), `0x235`
 calibrated angular velocity (Q9 rad/s), `0x236` quaternion XYZ (Q14), and
 `0x237` quaternion W plus heading accuracy. These are not CAN frames.
