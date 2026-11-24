@@ -75,12 +75,17 @@ screens subscribe to the same existing ROS publishers:
 | `/carl/imu` | `sensor_msgs/msg/Imu` | Sensor-axis acceleration (m/s², including gravity), angular velocity (rad/s); MPU orientation unavailable (`orientation_covariance[0]=-1`) |
 | `/carl/imu/temperature` | `sensor_msgs/msg/Temperature` | Sensor die temperature in °C, not ambient air |
 | `/carl/imu/diagnostics` | `std_msgs/msg/String` | JSON sensor model/interface, ready/stage, error and cumulative error count |
+| `/carl/velocity` | `carl_msgs/msg/CarlVelocity` | Provisional signed rear-wheel velocity in m/s; `valid=false` when encoder feedback is unavailable |
 
 These topics remain available at their firmware/bridge publication rates;
 browser subscriptions request at most 10 messages/second with a one-message queue.
-Other ROS consumers can subscribe directly without the GUI. No new topic or
-firmware change is needed for the displays. The IMU axes are not transformed to
-the vehicle frame, and the displays do not estimate orientation or vehicle speed.
+Other ROS consumers can subscribe directly without the GUI. No firmware change
+is needed for these displays. The IMU axes are not transformed to
+the vehicle frame, and the IMU displays do not estimate orientation or speed.
+The velocity node uses 43.5 inches per rear-wheel revolution and the measured
+left/right counts per wheel revolution. These are launch-time ROS parameters
+(`rolling_distance_m`, `left_counts_per_rev`, `right_counts_per_rev`) for later
+ground calibration. The estimate is for display; it does not enforce speed.
 
 The bridge also retains **GY-BNO08X SPI** compatibility. The following paragraphs
 describe the preserved BNO telemetry, not the installed MPU. Four wire-only snapshot parts

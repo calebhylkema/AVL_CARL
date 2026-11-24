@@ -14,4 +14,10 @@ def generate_launch_description():
             parameters=[config],
             output='screen',
         ),
+        Node(
+            package='carl_bridge',
+            executable='velocity_node',
+            name='carl_velocity',
+            output='screen',
+        ),
     ])

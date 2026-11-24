@@ -23,6 +23,7 @@ setup(
     entry_points={
         'console_scripts': [
             'bridge_node = carl_bridge.bridge_node:main',
+            'velocity_node = carl_bridge.velocity_node:main',
         ],
     },
 )

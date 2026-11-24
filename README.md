@@ -179,6 +179,7 @@ as ROS 2 nodes on the companion and reach the vehicle over the serial↔CAN brid
 
 | Document | Contents |
 |----------|----------|
+| [`docs/CARL_HANDOVER.md`](docs/CARL_HANDOVER.md) | Human handover: current hardware/software, setup, terminal and GUI operation, screenshots, and future work |
 | [`docs/hardware.md`](docs/hardware.md) | Bill of materials, part numbers, ratings, wiring, electrical integration |
 | [`docs/architecture.md`](docs/architecture.md) | Node topology, MCU-to-node rationale, capability comparison, caveats |
 | [`docs/can-bus.md`](docs/can-bus.md) | CAN bitrate, node IDs, message/ID allocation map |
